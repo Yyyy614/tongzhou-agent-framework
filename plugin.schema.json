@@ -1,0 +1,227 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Company Agent Plugin 0.1 / 0.2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "id",
+    "version",
+    "engine",
+    "entry",
+    "permissions",
+    "provides",
+    "configSchema",
+    "dependencies"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "enum": ["0.1.0", "0.2.0"]
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^@[a-z0-9-]+/[a-z0-9-]+$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+    },
+    "engine": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "framework",
+        "protocol"
+      ],
+      "properties": {
+        "framework": {
+          "type": "string",
+          "minLength": 1
+        },
+        "protocol": {
+          "const": "1.0"
+        }
+      }
+    },
+    "entry": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path"
+          ],
+          "properties": {
+            "kind": {
+              "const": "module"
+            },
+            "path": {
+              "type": "string",
+              "pattern": "^\\./[A-Za-z0-9][A-Za-z0-9_./-]*$",
+              "maxLength": 240
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "connectionRef"
+          ],
+          "properties": {
+            "kind": {
+              "const": "remote"
+            },
+            "connectionRef": {
+              "type": "string",
+              "pattern": "^connection:[a-z0-9-]+$"
+            }
+          }
+        }
+      ]
+    },
+    "permissions": {
+      "type": "array",
+      "uniqueItems": true,
+      "maxItems": 64,
+      "items": {
+        "type": "string",
+        "pattern": "^[a-z][a-z0-9_.:-]+$"
+      }
+    },
+    "provides": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "tools",
+        "presets",
+        "events"
+      ],
+      "properties": {
+        "tools": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "inputSchema",
+              "outputSchema",
+              "effect"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_.-]+$"
+              },
+              "inputSchema": {
+                "type": "string",
+                "pattern": "^\\./[A-Za-z0-9][A-Za-z0-9_./-]*$",
+                "maxLength": 240
+              },
+              "outputSchema": {
+                "type": "string",
+                "pattern": "^\\./[A-Za-z0-9][A-Za-z0-9_./-]*$",
+                "maxLength": 240
+              },
+              "effect": {
+                "enum": [
+                  "read",
+                  "write",
+                  "host"
+                ]
+              },
+              "hostServices": {
+                "type": "array", "uniqueItems": true, "maxItems": 32,
+                "items": { "type": "string", "pattern": "^[a-z][a-z0-9_.]+$" }
+              }
+            }
+          }
+        },
+        "presets": {
+          "type": "array",
+          "maxItems": 32,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "id",
+              "runtimeRef",
+              "instructions",
+              "memoryProfile",
+              "toolRefs"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9-]+$"
+              },
+              "runtimeRef": {
+                "enum": [
+                  "harness",
+                  "remote"
+                ]
+              },
+              "instructions": {
+                "type": "string",
+                "pattern": "^\\./[A-Za-z0-9][A-Za-z0-9_./-]*$",
+                "maxLength": 240
+              },
+              "memoryProfile": {
+                "const": "agent-private"
+              },
+              "toolRefs": {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        },
+        "events": {
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 64,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "configSchema": {
+      "type": "string",
+      "pattern": "^\\./[A-Za-z0-9][A-Za-z0-9_./-]*$",
+      "maxLength": 240
+    },
+    "dependencies": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "versionRange"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "versionRange": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    }
+  }
+}
+

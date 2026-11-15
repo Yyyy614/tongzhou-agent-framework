@@ -1,0 +1,1 @@
+export function apply(ctx){ctx.tools.register('connections.catalog',async(_, {services})=>services.connections.catalog());ctx.tools.register('connections.describe',async({id},{services})=>services.connections.describe(id));}

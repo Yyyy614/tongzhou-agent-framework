@@ -1,0 +1,13 @@
+import { readFile } from 'node:fs/promises';
+import assert from 'node:assert/strict';
+import { parse } from 'yaml';
+const config=parse(await readFile('deploy/private/compose.yaml','utf8'));
+assert.equal(config.name,'company-agent-private');
+for(const service of Object.values(config.services))assert.equal(service.labels['com.company-agent.scope'],'company-agent-private');
+assert(!config.services.database.ports);assert(!config.services.app.ports);
+assert(config.services.database.volumes.includes('database:/var/lib/postgresql'));
+assert(config.services.app.volumes.includes('state:/app/.local'));
+assert.equal(config.services.app.environment.FRAMEWORK_ROOT,'/app/.local/host');
+assert.equal(config.services.app.environment.TRUSTED_PROXY_IP,config.services.gateway.networks.backend.ipv4_address);
+assert.equal(config.services.gateway.ports.length,1);
+console.log(JSON.stringify({configurationValid:true,databaseNotPublished:true,applicationBehindHTTPS:true,stateAndVaultPersistent:true,hostDeploymentExecuted:false}));

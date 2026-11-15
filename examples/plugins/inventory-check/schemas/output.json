@@ -1,0 +1,1 @@
+{"type":"object","additionalProperties":false,"required":["matched","differences"],"properties":{"matched":{"type":"integer","minimum":0,"maximum":200},"differences":{"type":"array","maxItems":200,"items":{"type":"object","additionalProperties":false,"required":["sku","delta"],"properties":{"sku":{"type":"string","maxLength":80},"delta":{"type":"integer"}}}}}}

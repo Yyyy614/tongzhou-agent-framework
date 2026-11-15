@@ -1,0 +1,17 @@
+{
+  "name": "@example/conformance",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "files": [
+    "agent-plugin.json",
+    "dist",
+    "schemas",
+    "presets",
+    "memory"
+  ],
+  "companyAgent": {
+    "manifest": "./agent-plugin.json"
+  }
+}
+

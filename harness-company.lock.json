@@ -1,0 +1,16 @@
+{
+  "upstreamVersion": "0.2.2-rc.2",
+  "upstreamCommit": "e8f7b93a344964de3dca1ace9e72b6e4d6de87cb",
+  "electronVersion": "44.7.0",
+  "modules": {
+    "host-process.ts": "fb64b5a77ea65aaa8887268d7f9e2b2051768aa7fa1e5b1e416c8acb4f40c5d0",
+    "node-environment.ts": "cd760fede0ea4838269b09f9d68fd95dde2956d3542f16ed2a6b9629b02339bf",
+    "web-document.ts": "70da9451b517f8a3b094b2e361b4d666662052b7761cc0302b97d10e46b3f3ce",
+    "project-manager.ts": "45248e8e74fe5151947f4547521585701db081f11b46939b06d5f6b5723eba53",
+    "runtime-tree.ts": "0178c8bf156b85a0f5107f7f29a277c91f434ef345cb81550ce759f10fb3a7fb",
+    "core-package-set.ts": "578403a76103a378a6abff4257cf45ee65b9e31d0b87b83a475d12da33f85667",
+    "release.ts": "ab4c40200893effa8e3ea0840c43630ba10403242f90ecccba49ae9a11c82140",
+    "host-protocol.ts": "3ac3b9c5416144de212ed2e1fae3ae17a12dedd9389df99f07283012df5d77b9",
+    "paths.ts": "2d77c11510fbc539de0f43510d0a772711ac1be461598625d2768080168be639"
+  }
+}

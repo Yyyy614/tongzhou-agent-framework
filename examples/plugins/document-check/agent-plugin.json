@@ -1,0 +1,7 @@
+{
+  "schemaVersion":"0.1.0","id":"@independent/document-check","version":"0.1.0",
+  "engine":{"framework":">=0.1.0 <0.2.0","protocol":"1.0"},
+  "entry":{"kind":"module","path":"./plugin.mjs"},"permissions":[],
+  "provides":{"tools":[{"id":"document.check","inputSchema":"./schemas/input.json","outputSchema":"./schemas/output.json","effect":"read"}],"presets":[{"id":"document-worker","runtimeRef":"harness","instructions":"./presets/worker.md","memoryProfile":"agent-private","toolRefs":["document.check"]}],"events":[]},
+  "configSchema":"./schemas/config.json","dependencies":[]
+}

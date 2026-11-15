@@ -1,0 +1,10 @@
+import{test,expect}from'vitest';import{mkdir,mkdtemp}from'node:fs/promises';import{resolve}from'node:path';import{createFramework}from'../src/index.js';import{createServer}from'../src/server.js';
+import{HarnessRuntime}from'../src/runtime.js';
+test('an isolated reverse-proxy path keeps web assets and API calls inside its deployment',async()=>{
+    await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/entry-web-'))}),app=await createServer(host,{publicBasePath:'/a2'} as any);
+    try{const response=await app.inject('/');expect(response.body).toContain('name="company-base-path" content="/a2"');expect(response.body).toContain('src="/a2/assets/app.js"');expect(response.body).toContain('href="/a2/assets/styles.css"');}finally{await app.close();await host.close();}
+});
+test('the complete Harness runtime supports a strict HTTPS deployment path and returns prefixed client gateways',async()=>{
+    await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/entry-runtime-path-'))}),app=await createServer(host,{publicBasePath:'/a2'});let runtime:HarnessRuntime|undefined;
+    try{runtime=new HarnessRuntime(app,host,{apiKey:'fixture',upstreamURL:'https://example.invalid',publicOrigin:'https://company.example/a2/'});await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'alice',companyId:'one',role:'employee',permissions:[]});await host.putAgent({id:'agent',ownerId:'alice',companyId:'one',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});const response=await app.inject({url:'/v1/harness/clients',method:'POST',headers:{authorization:'Bearer '+await host.issueAccessToken('alice')},payload:{agentId:'agent'}});expect(response.statusCode).toBe(201);expect(response.json().modelURL).toMatch(/^https:\/\/company\.example\/a2\/internal\/client\//u);expect(response.json().mcpURL).toContain('/a2/internal/client/');}finally{await runtime?.close();await app.close();await host.close();}
+});

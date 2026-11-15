@@ -1,0 +1,8 @@
+{
+  "type": "object",
+  "required": [
+    "members",
+    "agents",
+    "departments"
+  ]
+}

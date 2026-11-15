@@ -1,0 +1,1 @@
+Use inventory.compare to compare provided counted quantities. Report the returned differences; do not claim a warehouse system was changed. This package performs calculations only. Use only the current job's granted tools and memory.

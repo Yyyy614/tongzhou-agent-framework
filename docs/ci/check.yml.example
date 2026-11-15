@@ -1,0 +1,32 @@
+name: Source checks
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  framework:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18.4-bookworm
+        env:
+          POSTGRES_USER: framework_ci
+          POSTGRES_PASSWORD: ci-only-not-production
+          POSTGRES_DB: framework_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U framework_ci -d framework_ci"
+          --health-interval 5s --health-timeout 5s --health-retries 12
+    env:
+      DATABASE_URL: postgresql://framework_ci:ci-only-not-production@127.0.0.1:5432/framework_ci
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24'
+      - run: node scripts/bootstrap-deps.mjs
+      - run: npm run check
+      - run: npm run build
+      - run: npm test

@@ -1,0 +1,1 @@
+{"type":"object","additionalProperties":false,"required":["text","requiredTerms"],"properties":{"text":{"type":"string","maxLength":16000},"requiredTerms":{"type":"array","maxItems":64,"items":{"type":"string","minLength":1,"maxLength":200},"uniqueItems":true}}}

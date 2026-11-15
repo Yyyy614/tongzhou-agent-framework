@@ -1,0 +1,1 @@
+{"type":"object","additionalProperties":false,"required":["noteId","version","markdown"],"properties":{"noteId":{"type":"string"},"version":{"type":"integer","minimum":1},"markdown":{"type":"string"}}}

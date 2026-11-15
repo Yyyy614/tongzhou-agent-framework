@@ -1,0 +1,30 @@
+import { mkdir, readFile, writeFile, access } from 'node:fs/promises';
+import { createReadStream } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import { resolve, join } from 'node:path';
+import { companyReleaseConfig } from './company-release-config.mjs';
+const root=resolve(import.meta.dirname,'..');
+const mirror=process.argv.includes('--mirror');
+const args=process.argv.slice(2).filter(value=>value!=='--mirror');
+if(args.length!==4||args[0]!=='--release-manifest'||args[2]!=='--output')throw Error('Usage: node scripts/build-company-installer.mjs --release-manifest <file> --output <new-directory>');
+const release=JSON.parse(await readFile(resolve(args[1]),'utf8'));
+const settings=companyReleaseConfig(release);
+const application=join(release.directory,'resources/app');
+if(JSON.stringify(JSON.parse(await readFile(join(application,'company.json'),'utf8')))!==JSON.stringify(settings))throw Error('Employee release configuration mismatch');
+const output=resolve(args[3]);try{await access(output);throw Error('Refuse to overwrite existing installer output');}catch(error){if(error.code!=='ENOENT')throw error;}
+const tools=join(root,'.tools/company-installer-tools');
+if(JSON.parse(await readFile(join(tools,'node_modules/electron-builder/package.json'),'utf8')).version!=='26.18.0')throw Error('Installer builder differs from pinned version');
+const project=join(root,'.tools/company-installer-project');await mkdir(project,{recursive:true});
+await writeFile(join(project,'package.json'),JSON.stringify({name:'company-harness-cloud-test',version:settings.version,description:'公司 Harness 云端隔离测试',author:'Company Agent Framework',license:'MIT'},null,2));
+const config={appId:'com.company.agent.harness.cloudtest',productName:'公司Harness云端测试版',executableName:'公司Harness',electronVersion:release.upstream.electronVersion,asar:false,npmRebuild:false,compression:'normal',directories:{output},win:{target:[{target:'nsis',arch:['x64']}],signAndEditExecutable:false},nsis:{guid:'35e348b9-4c40-4c81-9f7f-60c1c110548a',oneClick:false,perMachine:false,allowElevation:false,allowToChangeInstallationDirectory:true,createDesktopShortcut:true,createStartMenuShortcut:true,shortcutName:'公司Harness（云端测试）',runAfterFinish:true,deleteAppDataOnUninstall:false,differentialPackage:false,artifactName:'CompanyHarness-CloudTest-${version}-x64-Setup.exe'}};
+const configPath=join(project,'electron-builder.json');await writeFile(configPath,JSON.stringify(config,null,2));
+const env={...process.env,CSC_IDENTITY_AUTO_DISCOVERY:'false',ELECTRON_BUILDER_CACHE:join(root,'.tools/electron-builder-cache')};
+for(const name of Object.keys(env))if(/proxy|^NODE_OPTIONS$|^GLOBAL_AGENT/iu.test(name))delete env[name];
+if(mirror)env.ELECTRON_BUILDER_BINARIES_MIRROR='https://npmmirror.com/mirrors/electron-builder-binaries/';
+const build=spawnSync(process.execPath,[join(tools,'node_modules/electron-builder/out/cli/cli.js'),'--projectDir',project,'--prepackaged',resolve(release.directory),'--config',configPath,'--win','nsis','--x64','--publish','never'],{cwd:root,env,windowsHide:true,stdio:'inherit',timeout:900000});
+if(build.error)throw build.error;if(build.status!==0)throw Error('Employee installer build failed');
+const installer=join(output,`CompanyHarness-CloudTest-${settings.version}-x64-Setup.exe`);
+const digest=createHash('sha256');let bytes=0;for await(const chunk of createReadStream(installer)){bytes+=chunk.length;digest.update(chunk);}
+const manifest={...settings,installer,bytes,sha256:digest.digest('hex'),builtAt:new Date().toISOString(),signed:false,perUser:true,requiresNodeInstallation:false,usesExternalLauncher:false,chatHistoryRoams:false};
+await writeFile(join(output,'installer-release.json'),JSON.stringify(manifest,null,2));console.log(JSON.stringify({installer,bytes,signed:false}));

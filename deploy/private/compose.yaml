@@ -1,0 +1,71 @@
+name: company-agent-private
+services:
+  database:
+    image: postgres:18.4-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: company_agent
+      POSTGRES_DB: company_agent
+      POSTGRES_PASSWORD_FILE: /run/secrets/database_password
+    secrets: [database_password]
+    volumes: [database:/var/lib/postgresql]
+    networks: [backend]
+    healthcheck:
+      test: [CMD-SHELL, pg_isready -U company_agent -d company_agent]
+      interval: 10s
+      retries: 10
+    labels: { com.company-agent.scope: company-agent-private }
+  app:
+    build:
+      context: ../..
+      dockerfile: deploy/private/Dockerfile
+    restart: unless-stopped
+    user: '1000:1000'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    pids_limit: 512
+    mem_limit: 3g
+    tmpfs: ['/tmp:rw,exec,nosuid,nodev,size=256m', '/home/node/.cache:rw,uid=1000,gid=1000,mode=700,size=128m']
+    environment:
+      HOST: 0.0.0.0
+      PORT: '4317'
+      FRAMEWORK_ROOT: /app/.local/host
+      PUBLIC_ORIGIN: https://${AGENT_HOST:?Set AGENT_HOST}:${HTTPS_PORT:-8443}
+      TRUSTED_PROXY_IP: 172.29.83.4
+      MAX_CONCURRENT_AGENTS: ${MAX_CONCURRENT_AGENTS:-3}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+    secrets: [database_password]
+    volumes: [state:/app/.local]
+    networks:
+      backend: { ipv4_address: 172.29.83.3 }
+    depends_on:
+      database: { condition: service_healthy }
+    healthcheck:
+      test: [CMD, node, -e, 'fetch("http://127.0.0.1:4317/health").then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))']
+      interval: 15s
+      retries: 5
+    labels: { com.company-agent.scope: company-agent-private }
+  gateway:
+    image: caddy:2.11.8-alpine
+    restart: unless-stopped
+    ports: ['${LAN_IP:?Set the host LAN IP}:${HTTPS_PORT:-8443}:443']
+    environment: { AGENT_HOST: '${AGENT_HOST:?Set AGENT_HOST}' }
+    volumes: ['./Caddyfile:/etc/caddy/Caddyfile:ro', 'certificates:/data', 'caddy_config:/config']
+    networks:
+      backend: { ipv4_address: 172.29.83.4 }
+    depends_on:
+      app: { condition: service_healthy }
+    labels: { com.company-agent.scope: company-agent-private }
+networks:
+  backend:
+    ipam:
+      config: [{ subnet: 172.29.83.0/24 }]
+volumes:
+  database: {}
+  state: {}
+  certificates: {}
+  caddy_config: {}
+secrets:
+  database_password:
+    file: ./private/database-password.txt

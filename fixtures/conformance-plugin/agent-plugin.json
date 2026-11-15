@@ -1,0 +1,43 @@
+{
+  "schemaVersion": "0.1.0",
+  "id": "@example/conformance",
+  "version": "0.1.0",
+  "engine": {
+    "framework": ">=0.1.0 <0.2.0",
+    "protocol": "1.0"
+  },
+  "entry": {
+    "kind": "module",
+    "path": "./dist/plugin.mjs"
+  },
+  "permissions": [
+    "memory.self.read",
+    "memory.self.propose_write",
+    "report.self.write"
+  ],
+  "provides": {
+    "tools": [
+      {
+        "id": "text.normalize",
+        "inputSchema": "./schemas/normalize.input.json",
+        "outputSchema": "./schemas/normalize.output.json",
+        "effect": "read"
+      }
+    ],
+    "presets": [
+      {
+        "id": "fixture-worker",
+        "runtimeRef": "harness",
+        "instructions": "./presets/worker.md",
+        "memoryProfile": "agent-private",
+        "toolRefs": [
+          "text.normalize"
+        ]
+      }
+    ],
+    "events": []
+  },
+  "configSchema": "./schemas/config.json",
+  "dependencies": []
+}
+

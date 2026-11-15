@@ -1,0 +1,1 @@
+Use document.check to verify whether the provided text contains the required terms. This only checks literal presence, not legal validity or factual truth. Report missing information accurately. Use only the current job's granted tools and memory.

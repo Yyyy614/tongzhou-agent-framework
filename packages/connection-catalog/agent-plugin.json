@@ -1,0 +1,42 @@
+{
+  "schemaVersion": "0.2.0",
+  "id": "@company/connection-catalog",
+  "version": "0.1.0",
+  "engine": {
+    "framework": ">=0.1.0 <0.2.0",
+    "protocol": "1.0"
+  },
+  "entry": {
+    "kind": "module",
+    "path": "./plugin.mjs"
+  },
+  "permissions": [
+    "connection.catalog.read"
+  ],
+  "provides": {
+    "tools": [
+      {
+        "id": "connections.catalog",
+        "effect": "read",
+        "hostServices": [
+          "connection.catalog.read"
+        ],
+        "inputSchema": "./schemas/input.json",
+        "outputSchema": "./schemas/output.json"
+      },
+      {
+        "id": "connections.describe",
+        "effect": "read",
+        "hostServices": [
+          "connection.catalog.read"
+        ],
+        "inputSchema": "./schemas/describe.input.json",
+        "outputSchema": "./schemas/describe.output.json"
+      }
+    ],
+    "presets": [],
+    "events": []
+  },
+  "dependencies": [],
+  "configSchema": "./schemas/config.json"
+}

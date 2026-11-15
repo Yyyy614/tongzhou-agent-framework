@@ -1,0 +1,7 @@
+{
+    auto_https disable_redirects
+}
+https://{$AGENT_HOST} {
+    tls internal
+    reverse_proxy app:4317
+}

@@ -1,0 +1,7 @@
+{
+  "schemaVersion":"0.1.0","id":"@independent/inventory-check","version":"0.1.0",
+  "engine":{"framework":">=0.1.0 <0.2.0","protocol":"1.0"},
+  "entry":{"kind":"module","path":"./plugin.mjs"},"permissions":[],
+  "provides":{"tools":[{"id":"inventory.compare","inputSchema":"./schemas/input.json","outputSchema":"./schemas/output.json","effect":"read"}],"presets":[{"id":"inventory-worker","runtimeRef":"harness","instructions":"./presets/worker.md","memoryProfile":"agent-private","toolRefs":["inventory.compare"]}],"events":[]},
+  "configSchema":"./schemas/config.json","dependencies":[]
+}

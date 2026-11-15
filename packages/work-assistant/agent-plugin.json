@@ -1,0 +1,121 @@
+{
+  "schemaVersion": "0.2.0",
+  "id": "@company/work-assistant",
+  "version": "0.1.0",
+  "engine": {
+    "framework": ">=0.1.0 <0.2.0",
+    "protocol": "1.0"
+  },
+  "entry": {
+    "kind": "module",
+    "path": "./plugin.mjs"
+  },
+  "permissions": [
+    "team.read",
+    "work.dispatch",
+    "work.read",
+    "reminder.write",
+    "reminder.read",
+    "inbox.self.read",
+    "event.self.publish"
+  ],
+  "provides": {
+    "tools": [
+      {
+        "id": "team.list",
+        "inputSchema": "./schemas/team.list.input.json",
+        "outputSchema": "./schemas/team.list.output.json",
+        "effect": "read",
+        "hostServices": [
+          "team.read"
+        ]
+      },
+      {
+        "id": "work.dispatch",
+        "inputSchema": "./schemas/work.dispatch.input.json",
+        "outputSchema": "./schemas/work.dispatch.output.json",
+        "effect": "host",
+        "hostServices": [
+          "work.dispatch"
+        ]
+      },
+      {
+        "id": "work.list",
+        "inputSchema": "./schemas/work.list.input.json",
+        "outputSchema": "./schemas/work.list.output.json",
+        "effect": "read",
+        "hostServices": [
+          "work.read"
+        ]
+      },
+      {
+        "id": "work.read",
+        "inputSchema": "./schemas/work.read.input.json",
+        "outputSchema": "./schemas/work.read.output.json",
+        "effect": "read",
+        "hostServices": [
+          "work.read"
+        ]
+      },
+      {
+        "id": "reminder.schedule",
+        "inputSchema": "./schemas/reminder.schedule.input.json",
+        "outputSchema": "./schemas/reminder.schedule.output.json",
+        "effect": "host",
+        "hostServices": [
+          "reminder.write"
+        ]
+      },
+      {
+        "id": "reminder.list",
+        "inputSchema": "./schemas/reminder.list.input.json",
+        "outputSchema": "./schemas/reminder.list.output.json",
+        "effect": "read",
+        "hostServices": [
+          "reminder.read"
+        ]
+      },
+      {
+        "id": "inbox.list",
+        "inputSchema": "./schemas/inbox.list.input.json",
+        "outputSchema": "./schemas/inbox.list.output.json",
+        "effect": "read",
+        "hostServices": [
+          "inbox.self.read"
+        ]
+      },
+      {
+        "id": "event.publish",
+        "inputSchema": "./schemas/event.publish.input.json",
+        "outputSchema": "./schemas/event.publish.output.json",
+        "effect": "host",
+        "hostServices": [
+          "event.self.publish"
+        ]
+      }
+    ],
+    "presets": [
+      {
+        "id": "work-assistant",
+        "runtimeRef": "harness",
+        "instructions": "./presets/assistant.md",
+        "memoryProfile": "agent-private",
+        "toolRefs": [
+          "team.list",
+          "work.dispatch",
+          "work.list",
+          "work.read",
+          "reminder.schedule",
+          "reminder.list",
+          "inbox.list",
+          "event.publish"
+        ]
+      }
+    ],
+    "events": [
+      "work.issue"
+    ]
+  },
+  "configSchema": "./schemas/config.json",
+  "dependencies": []
+}

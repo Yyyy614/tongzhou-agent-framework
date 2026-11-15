@@ -1,0 +1,50 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160
+    },
+    "dueAt": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 40
+    },
+    "details": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000
+    },
+    "agentId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64
+    },
+    "subjectRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "system": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        }
+      },
+      "required": [
+        "system",
+        "id"
+      ]
+    }
+  },
+  "required": [
+    "title",
+    "dueAt"
+  ]
+}

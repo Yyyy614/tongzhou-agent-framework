@@ -1,0 +1,11 @@
+- id: ui-settings-account
+  disabled: true
+- id: ui-account-notifications
+  disabled: true
+- id: ui-brand-official
+  disabled: true
+- id: ui-plugin-manager
+  disabled: true
+- insert:
+    - id: company-workspace
+      name: '@company/harness-workspace'

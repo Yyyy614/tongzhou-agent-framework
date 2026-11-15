@@ -1,0 +1,12 @@
+{
+  "name": "@company/harness-company-bundle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "index.mjs",
+  "exports": { ".": "./index.mjs", "./binding": "./binding.mjs", "./cordis.patch.yml": "./cordis.patch.yml", "./package.json": "./package.json" },
+  "engines": { "dsh": "0.2.2-rc.2" },
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "dependencies": { "@deepseek-ai/dsh-agent-preset": "0.2.2-rc.2", "@deepseek-ai/dsh-persona": "0.2.2-rc.2" },
+  "files": ["index.mjs", "binding.mjs", "client.mjs", "presets.json", "cordis.patch.yml", "README.md"]
+}

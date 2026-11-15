@@ -1,0 +1,13 @@
+.git
+.env
+.env.*
+.local
+.tools
+.test-data
+node_modules
+dist
+output
+coverage
+deploy/private/.env
+deploy/private/private
+*.log
