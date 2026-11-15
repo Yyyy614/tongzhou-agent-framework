@@ -47,7 +47,7 @@ flowchart TB
 需要Node.js **24.9+**、PostgreSQL和Git。开发验证环境使用过Node 24.17、PostgreSQL 18；仓库不附带数据库或员工身份。
 
 ```powershell
-git clone <你的仓库地址> tongzhou-agent-framework
+git clone https://github.com/Yyyy614/tongzhou-agent-framework.git tongzhou-agent-framework
 cd tongzhou-agent-framework
 node scripts/bootstrap-deps.mjs
 
@@ -61,7 +61,7 @@ npm run build
 npm start
 ```
 
-默认地址 `http://127.0.0.1:4317`，健康接口 `/health`。另开终端执行 `npm run console` 打开一次性管理入口。随机开发身份保存在被忽略的`.local`目录中。
+默认地址 `http://127.0.0.1:4317`，健康接口 `/health`。Windows + PowerShell 7可另开终端执行 `npm run console` 打开一次性管理入口；其他系统的手动打开方式见快速开始。随机开发身份保存在被忽略的`.local`目录中。
 
 完整步骤见[快速开始](docs/QUICKSTART.md)。没有模型凭证也能运行确定性测试；真实Agent对话需要有效模型服务。
 
@@ -74,7 +74,7 @@ npm run studio
 npm run console:studio
 ```
 
-员工原生版还需要固定版本的官方Harness运行时及构建工具，准备后运行：
+`console:studio`的一键打开也需要Windows + PowerShell 7。员工原生版还需要固定版本的官方Harness运行时及构建工具，准备后运行：
 
 ```powershell
 npm run build:harness:studio

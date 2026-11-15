@@ -21,3 +21,10 @@ test('source export blocks tracked private files and token-like literals without
     f.git('rm','--cached','.env');const secret='sk-'+randomBytes(24).toString('hex');await writeFile(join(f.repo,'bad-config.json'),JSON.stringify({key:secret}));f.git('add','.');f.git('commit','-qm','token fixture');run=f.run();expect(run.status).not.toBe(0);expect(run.stderr).toContain('model-key');expect(run.stderr).not.toContain(secret);
     expect(await readdir(f.output).catch(()=>[])).toHaveLength(0);
 });
+test('source export rejects a declared plugin entry omitted by broad generated-directory ignores',async()=>{
+    const f=await fixture(),directory=join(f.repo,'fixtures/example/dist');await mkdir(directory,{recursive:true});
+    await writeFile(join(f.repo,'.gitignore'),'.env\ndist/\n');await writeFile(join(directory,'plugin.mjs'),'export function apply(){}\n');await writeFile(join(f.repo,'fixtures/example/agent-plugin.json'),JSON.stringify({entry:{kind:'module',path:'./dist/plugin.mjs'}}));f.git('add','.');f.git('commit','-qm','missing entry');
+    let run=f.run();expect(run.status).not.toBe(0);expect(run.stderr).toContain('missing-plugin-entry');
+    await writeFile(join(f.repo,'.gitignore'),'.env\n/dist/\n');f.git('add','.');f.git('commit','-qm','include entry');run=f.run();expect(run.status,run.stderr).toBe(0);
+    expect(zipNames(await readFile(JSON.parse(run.stdout).archive))).toContain('tongzhou-agent-framework/fixtures/example/dist/plugin.mjs');
+});

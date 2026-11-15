@@ -4,6 +4,8 @@
 
 需要Node.js 24.9或更新版本、Git、可连接的PostgreSQL。锁定的包管理器为pnpm 11.28.5。Windows原生桌面还需要PowerShell 7、7-Zip和固定版本的Harness/Electron，后端及插件开发不要求先构建桌面。
 
+当前`console`和`console:studio`的一键打开浏览器操作同样依赖Windows与PowerShell 7。其他系统可手动访问后端地址，使用本机私有身份登录；不要把这两个一键打开命令当成跨平台入口。
+
 在项目根目录执行：
 
 ```powershell
@@ -42,6 +44,8 @@ npm start
 ```
 
 默认端口4317，`GET /health`用于检查服务。另开终端执行`npm run console`，会签发一次性入口并在Windows浏览器中打开。无匿名管理员入口，模型Key不能作为后台登录令牌。
+
+不自动打开浏览器时，可执行`npm run console -- --no-open`，然后在本机私有`.local/console-entry.json`中读取`origin`与`code`，组合`origin/#entry=code`手动打开；不要把一次性入口写入公共日志或聊天。也可直接访问后台并使用`.local/access.json`里的本机管理员身份登录。
 
 ## 5. 当前同舟管理工作台
 

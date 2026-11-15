@@ -1,16 +1,24 @@
 import{execFileSync}from'node:child_process';import{readFile,mkdir,access,writeFile,rename}from'node:fs/promises';import{resolve,join,basename}from'node:path';import{createHash}from'node:crypto';
 import{sourceIssues}from'./source-safety.mjs';
+import{posix}from'node:path';
 const options={};for(let i=2;i<process.argv.length;i+=2){const key=process.argv[i];if(!['--repo','--output'].includes(key)||!process.argv[i+1]||key in options)throw Error('Usage: node scripts/source-package.mjs [--repo <directory>] [--output <new-output-directory>]');options[key]=process.argv[i+1];}
 const root=resolve(options['--repo']??resolve(import.meta.dirname,'..')),output=resolve(options['--output']??join(root,'artifacts'));
 const git=(...args)=>execFileSync('git',args,{cwd:root,windowsHide:true,maxBuffer:32*1024*1024});
 try{
     const commit=git('rev-parse','HEAD').toString().trim();
     if(git('status','--porcelain','--untracked-files=normal').toString().trim())throw Error('Refusing export: uncommitted source changes exist');
-    const files=[],issues=[];
+    const files=[],issues=[],contents=new Map();
     for(const record of git('ls-tree','-rz','--full-tree','HEAD').toString().split('\0').filter(Boolean)){
         const split=record.indexOf('\t'),path=record.slice(split+1),metadata=record.slice(0,split).split(' ');
         if(metadata[0]==='120000')issues.push({path,rule:'symbolic-link'});
-        const bytes=git('show','HEAD:'+path);issues.push(...sourceIssues(path,bytes));files.push({path,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')});
+        const bytes=git('show','HEAD:'+path);contents.set(path,bytes);issues.push(...sourceIssues(path,bytes));files.push({path,bytes:bytes.length,sha256:createHash('sha256').update(bytes).digest('hex')});
+    }
+    for(const{path}of files.filter(f=>posix.basename(f.path)==='agent-plugin.json')){
+        let declaration;try{declaration=JSON.parse(contents.get(path).toString('utf8'));}catch{issues.push({path,rule:'invalid-plugin-manifest'});continue;}
+        if(declaration.entry?.kind==='module'&&typeof declaration.entry.path==='string'){
+            const entry=posix.normalize(posix.join(posix.dirname(path),declaration.entry.path.replaceAll('\\','/')));
+            if(!contents.has(entry))issues.push({path,rule:'missing-plugin-entry',entry});
+        }
     }
     if(issues.length)throw Error('Source publication rejected: '+JSON.stringify(issues));
     const stem='tongzhou-source-'+commit.slice(0,12),archive=join(output,stem+'.zip'),manifest=join(output,stem+'.manifest.json');
