@@ -92,7 +92,11 @@ export function apply(ctx){
     const enqueue=fn=>{const next=operation.then(fn);operation=next.catch(()=>{});return next;};
     const visible=()=>ctx.layout.panelInfo.getSnapshot().activePanelId==='company-work';
     const refresh=()=>{if(pending)return pending;store.set({...store.getSnapshot(),loading:true});pending=enqueue(()=>bridge.call('work-center')).then(data=>{if(!disposed)store.set({data,error:'',loading:false});},error=>{if(!disposed)store.set({...store.getSnapshot(),error:error.message,loading:false});}).finally(()=>{pending=undefined;clearTimeout(timer);if(!disposed&&visible())timer=setTimeout(refresh,4000);});return pending;};
-    const call=(kind,id,data)=>enqueue(()=>bridge.call('action',{kind,id,data}));
+    const call=(kind,id,data)=>enqueue(async()=>{
+        const result=await bridge.call('action',{kind,id,data});
+        if(kind==='context-select'&&!disposed){const current=store.getSnapshot();if(current.data)store.set({...current,data:{...current.data,workContext:{resources:result.sources.map(ref=>({id:ref.id,version:ref.version})),...(result.workId?{workId:result.workId}:{})}}});}
+        return result;
+    });
     ctx.effect(()=>{const tag=document.createElement('style');tag.textContent=tokens+css;document.head.append(tag);return()=>tag.remove();},'company-work: styles');
     ctx.effect(()=>ctx.theme.overrideTokens('company-studio',{'--dsw-alias-brand-primary-new-colorprimary-new-color':{light:'#087f73',dark:'#65cfbc'},'--dsw-alias-button-info-fill':{light:'#087f73',dark:'#237d70'},'--dsw-alias-button-info-hover':{light:'#06695f',dark:'#2d9383'}}),'company-work: shared accent');
     ctx.effect(()=>{const changed=()=>{clearTimeout(timer);if(visible())void refresh();};const stop=ctx.layout.panelInfo.subscribe(changed);changed();return()=>{disposed=true;clearTimeout(timer);stop();};},'company-work: refresh');
