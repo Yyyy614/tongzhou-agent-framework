@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import { test, expect } from 'vitest';
 import Fastify from 'fastify';
 import { mkdir, mkdtemp } from 'node:fs/promises';
@@ -24,12 +25,12 @@ test('cancellation reaches the remote executor and interrupted runs require reco
             result = { state: cancelled ? 'cancelled' : 'running' };
         return { jsonrpc: '2.0', id: rpc.id, result };
     });
-    await remote.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(remote);
     await mkdir('.test-data', { recursive: true });
     const host = await createFramework({ root: await mkdtemp(resolve('.test-data/cancel-')), connections: { 'connection:remote': { url: remote.listeningOrigin + '/rpc' } } });
     const app = await createServer(host);
     const runtime = new HarnessRuntime(app, host, { apiKey: '', upstreamURL: 'https://api.deepseek.com/anthropic' });
-    await app.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(app);
     try {
         await host.installPlugin(resolve('fixtures/conformance-plugin'));
         await host.putActor({ id: 'alice', companyId: 'example', role: 'employee', permissions: [] });

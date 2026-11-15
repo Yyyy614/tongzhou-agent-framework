@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import { test, expect } from 'vitest';
 import Fastify from 'fastify';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
@@ -28,9 +29,9 @@ test('an external Harness client uses an employee-scoped connection, company too
         events.push(['content_block_stop', { type: 'content_block_stop', index: 0 }], ['message_delta', { type: 'message_delta', delta: { stop_reason: done ? 'end_turn' : 'tool_use', stop_sequence: null }, usage: { output_tokens: 12 } }], ['message_stop', { type: 'message_stop' }]);
         reply.header('content-type', 'text/event-stream').send(events.map(([event, data]) => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(''));
     });
-    await upstream.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(upstream);
     const runtime = new HarnessRuntime(app, host, { apiKey: 'private-upstream-fixture', upstreamURL: upstream.listeningOrigin });
-    await app.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(app);
     let harness: DeepSeekHarness | undefined;
     try {
         await host.installPlugin(resolve('fixtures/conformance-plugin'));

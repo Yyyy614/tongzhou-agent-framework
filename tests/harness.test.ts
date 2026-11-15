@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import { test, expect } from 'vitest';
 import Fastify from 'fastify';
 import { mkdir, mkdtemp } from 'node:fs/promises';
@@ -28,9 +29,9 @@ test('real Harness calls a mounted tool through scoped MCP and records provider 
         events.push(['content_block_stop', { type: 'content_block_stop', index: 0 }], ['message_delta', { type: 'message_delta', delta: { stop_reason: hasResult ? 'end_turn' : 'tool_use', stop_sequence: null }, usage: { output_tokens: 12 } }], ['message_stop', { type: 'message_stop' }]);
         reply.header('content-type', 'text/event-stream').send(events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join(''));
     });
-    await upstream.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(upstream);
     const runtime = new HarnessRuntime(app, host, { apiKey: 'fixture-provider-secret', upstreamURL: upstream.listeningOrigin, model: 'deepseek-flash' });
-    await app.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(app);
     try {
         await host.installPlugin(resolve('fixtures/conformance-plugin'));
         await host.putActor({ id: 'alice', companyId: 'example', role: 'employee', permissions: ['tool.invoke:@example/conformance:text.normalize'] });

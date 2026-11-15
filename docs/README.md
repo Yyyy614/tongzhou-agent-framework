@@ -13,6 +13,7 @@
 | 企业机器人及CLI | [外部入口](ENTRY_CONNECTORS.md) |
 | 员工账号与设备接入 | [账号](ACCOUNTS.md)、[员工接入](EMPLOYEE_ONBOARDING.md) |
 | Windows桌面、源码包、独立发行 | [构建与打包](BUILD_AND_DISTRIBUTION.md) |
+| 远程回执测试与端口故障 | [故障原因与回归验证](REMOTE_RECEIPT_TEST_FIX.md) |
 | 内网/自有服务器部署 | [私有部署](PRIVATE_DEPLOYMENT.md) |
 | Harness扩展与公司UI | [Harness适配](HARNESS_COMPANY.md)、[窗口与品牌修订](UI_CHROME_BRAND.md) |
 

@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import { test, expect } from 'vitest';
 import { mkdir, mkdtemp } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -10,7 +11,7 @@ test('an administrator onboards an employee once, with an independent device ide
     const host = await createFramework({ root: await mkdtemp(resolve('.test-data/onboarding-')) });
     const app = await createServer(host);
     const runtime = new HarnessRuntime(app, host, { apiKey: 'unused-fixture', upstreamURL: 'http://127.0.0.1:1', publicOrigin: 'https://agents.example.test' });
-    await app.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(app);
     try {
         await host.installPlugin(resolve('fixtures/conformance-plugin'));
         await host.putActor({ id: 'admin', companyId: 'one', role: 'admin', permissions: [] });

@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import{test,expect}from'vitest';
 import Fastify from'fastify';
 import{mkdir,mkdtemp}from'node:fs/promises';
@@ -22,7 +23,7 @@ test('real Harness waits without model polling and a fresh resumed Run reuses co
         events.push(['content_block_stop',{type:'content_block_stop',index:0}],['message_delta',{type:'message_delta',delta:{stop_reason:local&&tool?'tool_use':'end_turn',stop_sequence:null},usage:{output_tokens:20}}],['message_stop',{type:'message_stop'}]);
         return reply.header('content-type','text/event-stream').send(events.map(([name,data])=>`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join(''));
     });
-    await provider.listen({host:'127.0.0.1',port:0});await mkdir('.test-data',{recursive:true});
+    await listenHttp(provider);await mkdir('.test-data',{recursive:true});
     const host=await createFramework({root:await mkdtemp(resolve('.test-data/work-control-harness-'))}),app=await createServer(host);
     const runtime=new HarnessRuntime(app,host,{apiKey:'fixture',upstreamURL:provider.listeningOrigin}),queue=new TaskQueue(host,runtime);runtime.enableDelegation(queue);
     try{
@@ -30,7 +31,7 @@ test('real Harness waits without model polling and a fresh resumed Run reuses co
         await host.putActor({id:'lead',companyId:'one',role:'employee',teamScope:'direct',permissions:['team.read','team.dispatch','team.review']});
         await host.putActor({id:'alice',companyId:'one',role:'employee',managerId:'lead',permissions:['report.self.write']});
         await host.putAgent({id:'alice-agent',companyId:'one',ownerId:'alice',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[],servicePermissions:['report.self.write']});
-        await queue.open();queue.registerRoutes(app);await app.listen({host:'127.0.0.1',port:0});await queue.startWorker();
+        await queue.open();queue.registerRoutes(app);await listenHttp(app);await queue.startWorker();
         const work=await host.coordination!.create('lead',{title:'SDK work control',idempotencyKey:'sdk-a2',assignments:[{agentId:'alice-agent',prompt:'Record a report then request human assistance.'}]});
         await expect.poll(async()=>(await host.coordination!.get('lead',work.id)).state,{timeout:18000}).toBe('waiting');
         const paused=await host.coordination!.get('lead',work.id);expect(paused.control.question).toBe('Choose an approved next step');
@@ -52,13 +53,13 @@ test.each([false,true])('a remote cancellation accepted=%s never masks a missing
         if(rpc.method==='run.status')result={runId:'remote-one',state:finish?(accepted?'reconciliation_required':'succeeded'):'running'};
         if(rpc.method==='run.result')result={output:'remote done',evidenceRefs:['remote:one']};
         return{jsonrpc:'2.0',id:rpc.id,result};});
-    await remote.listen({host:'127.0.0.1',port:0});await mkdir('.test-data',{recursive:true});
+    await listenHttp(remote);await mkdir('.test-data',{recursive:true});
     const host=await createFramework({root:await mkdtemp(resolve('.test-data/work-control-remote-')),connections:{'connection:remote':{url:remote.listeningOrigin+'/rpc'}}}),app=await createServer(host);
     const runtime=new HarnessRuntime(app,host,{apiKey:'',upstreamURL:'https://example.invalid'}),queue=new TaskQueue(host,runtime);runtime.enableDelegation(queue);
     try{
         await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'lead',companyId:'one',role:'admin',permissions:[]});await host.putActor({id:'alice',companyId:'one',role:'employee',permissions:[]});
         await host.putAgent({id:'alice-agent',companyId:'one',ownerId:'alice',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[],runtime:'remote',connectionRef:'connection:remote'});
-        await queue.open();queue.registerRoutes(app);await app.listen({host:'127.0.0.1',port:0});await queue.startWorker();
+        await queue.open();queue.registerRoutes(app);await listenHttp(app);await queue.startWorker();
         const work=await host.coordination!.create('lead',{title:'Remote cancellation',idempotencyKey:'remote',assignments:[{agentId:'alice-agent',prompt:'generic work'}]});await expect.poll(()=>started,{timeout:8000}).toBe(true);
         await host.coordination!.control.command('lead',work.id,{revision:(await host.coordination!.get('lead',work.id)).revision,idempotencyKey:'stop',action:'stop',reason:'stop remote work'});
         finish=true;await expect.poll(async()=>(await host.coordination!.get('lead',work.id)).state,{timeout:10000}).toBe('reconciliation_required');

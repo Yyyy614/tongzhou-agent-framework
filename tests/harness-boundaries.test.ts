@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import { test, expect } from 'vitest';
 import Fastify from 'fastify';
 import { mkdir, mkdtemp } from 'node:fs/promises';
@@ -19,13 +20,13 @@ async function fixture(delegation = false) {
     const app = await createServer(host), upstream = Fastify();
     let calls = 0;
     upstream.post('/v1/messages', async (request) => { calls++; const body = request.body as any; return { id: 'fixture', type: 'message', role: 'assistant', model: 'deepseek-flash', content: [{ type: 'text', text: 'native result' }], stop_reason: body.messages[0].content === 'tool' ? 'tool_use' : 'end_turn', stop_sequence: null, usage: { input_tokens: 80, output_tokens: 12 } }; });
-    await upstream.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(upstream);
     const runtime = new HarnessRuntime(app, host, { apiKey: 'fixture', upstreamURL: upstream.listeningOrigin });
     const queue = new TaskQueue(host, { async run() { return { id: '00000000-0000-4000-8000-000000000001', state: 'succeeded', output: 'child summary' }; } });
     await queue.open();
     runtime.enableDelegation(queue);
     queue.registerRoutes(app);
-    await app.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(app);
     const headers = { authorization: 'Bearer ' + await host.issueAccessToken('alice') };
     const connect = async () => app.inject({ method: 'POST', url: '/v1/harness/clients', headers, payload: { agentId: 'worker' } });
     const path = (lease: any, suffix: string) => '/internal/client/' + lease.id + suffix;
@@ -114,7 +115,7 @@ test('an executor failure closes tool admission before persisting its failed out
     const f = await fixture(), remote = Fastify(), entered = deferred(), gate = deferred();
     let gateway:any, calls=0; const query=f.host.db.pool.query.bind(f.host.db.pool);
     remote.post('/rpc',async request=>{const rpc=request.body as any;gateway=rpc.params.context.gateway;return{jsonrpc:'2.0',id:rpc.id,result:{}};});
-    await remote.listen({host:'127.0.0.1',port:0});
+    await listenHttp(remote);
     let running:Promise<any>|undefined;
     try {
         f.host.options.connections={broken:{url:remote.listeningOrigin+'/rpc'}};

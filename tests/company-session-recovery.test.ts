@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import { test, expect } from 'vitest';
 import Fastify from 'fastify';
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
@@ -16,7 +17,7 @@ async function fixture(){
     backend.delete('/v1/harness/clients/:id',async(request,reply)=>{const id=(request.params as any).id;if(expiredAlice&&owner(request)==='alice')return reply.code(401).send({error:{code:'UNAUTHENTICATED'}});if(owners.get(id)!==owner(request))return reply.code(403).send({error:{code:'PERMISSION_DENIED'}});if(releaseFailure)return reply.code(503).send({error:{code:'UNAVAILABLE'}});leases.delete(id);return{closed:true};});
     backend.get('/v1/work',async()=>{await readBarrier;return{items:[]};});
     for(const path of ['/v1/assistant/inbox','/v1/assistant/reminders','/v1/connections'])backend.get(path,async()=>({items:[]}));
-    await backend.listen({host:'127.0.0.1',port:0});await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/company-recovery-'));
+    await listenHttp(backend);await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/company-recovery-'));
     let starts=0,stops=0,alive=false;const runtime={start:async()=>{starts++;alive=true;},stop:async()=>{stops++;alive=false;},isReady:()=>alive};
     const options={serverURL:backend.listeningOrigin,dataDir:root,protection:{encrypt:async(v:string)=>Buffer.from(v).toString('base64'),decrypt:async(v:string)=>Buffer.from(v,'base64').toString()},runtime};
     const session=await createCompanySession(options);await session.login({username:'alice',password:'fixture',deviceName:'test'});

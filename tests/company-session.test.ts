@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import { test, expect } from 'vitest';
 import Fastify from 'fastify';
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
@@ -12,7 +13,7 @@ test('one company application signs in, switches isolated Harness jobs and signs
     backend.get('/v1/harness/clients/:id',async()=>({lastRun:null}));
     backend.delete('/v1/harness/clients/:id',async request=>{released.push((request.params as any).id);return{closed:true};});
     backend.post('/v1/employee/logout',async()=>({signedOut:true}));
-    await backend.listen({host:'127.0.0.1',port:0});await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/company-session-'));
+    await listenHttp(backend);await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/company-session-'));
     const starts:any[]=[];let stopped=0;
     const runtime={start:async(config:any)=>{starts.push(config);},stop:async()=>{stopped++;}};
     const protection={encrypt:async(value:string)=>Buffer.from(value).toString('base64'),decrypt:async(value:string)=>Buffer.from(value,'base64').toString()};
@@ -48,7 +49,7 @@ test('switching jobs waits for confirmed teardown and a failed stop cannot start
     backend.post('/v1/harness/clients',async request=>({id:'lease-'+(++serial),agentId:(request.body as any).agentId,token:'lease-fixture',preset:{id:'employee',version:'0.1.0'}}));
     backend.get('/v1/harness/clients/:id',async()=>({lastRun:activeWork?{state:'running'}:null}));
     backend.delete('/v1/harness/clients/:id',async()=>({closed:true}));
-    await backend.listen({host:'127.0.0.1',port:0});await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/company-stop-'));
+    await listenHttp(backend);await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/company-stop-'));
     let failedStop=true;const started:string[]=[];
     const {createCompanySession}=await import('../client/company-session.mjs');
     const session=await createCompanySession({serverURL:backend.listeningOrigin,dataDir:root,protection:{encrypt:async(v:string)=>v,decrypt:async(v:string)=>v},runtime:{start:async(c:any)=>{started.push(c.lease.agentId);},stop:async()=>{if(failedStop)throw Error('Exit not confirmed');}}});
@@ -66,7 +67,7 @@ test('quitting during Host startup drains that transition and rejects new identi
     const backend=Fastify();backend.post('/v1/employee/login',async()=>({accessToken:'fixture-device',deviceId:'device',employee:{id:'alice',companyId:'company'}}));
     backend.get('/v1/employee/bootstrap',async()=>({employee:{id:'alice',companyId:'company'},agents:[{id:'a'}]}));backend.get('/v1/presets',async()=>[{id:'worker',version:'0.1.0'}]);
     backend.post('/v1/harness/clients',async()=>({id:'lease',agentId:'a',token:'fixture-lease',preset:{id:'worker',version:'0.1.0'}}));backend.delete('/v1/harness/clients/:id',async()=>({closed:true}));
-    await backend.listen({host:'127.0.0.1',port:0});await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/company-drain-'));
+    await listenHttp(backend);await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/company-drain-'));
     let started=false,stopped=false;let release!:()=>void;const barrier=new Promise<void>(r=>{release=r;});
     const {createCompanySession}=await import('../client/company-session.mjs');const session=await createCompanySession({serverURL:backend.listeningOrigin,dataDir:root,protection:{encrypt:async(v:string)=>v,decrypt:async(v:string)=>v},runtime:{start:async()=>{started=true;await barrier;},stop:async()=>{stopped=true;}}});
     let switching:Promise<unknown>|undefined,closing:Promise<unknown>|undefined;

@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import { test, expect } from 'vitest';
 import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -8,7 +9,7 @@ test('the actual employee transport releases a connection with a bodyless DELETE
     const backend = Fastify();
     let released = 0;
     backend.delete('/v1/harness/clients/connection', async () => { released++; return { closed: true }; });
-    await backend.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(backend);
     try {
         const response = await companyFetch(backend.listeningOrigin, '/v1/harness/clients/connection', { method: 'DELETE', token: 'fixture-employee' });
         expect(response.status).toBe(200);
@@ -27,7 +28,7 @@ test('an employee signs in on a fresh computer without saving their password or 
         return { accessToken: 'account-device-fixture', deviceId: 'second-device', employee: { id: 'staff', displayName: '员工' } };
     });
     backend.get('/v1/employee/bootstrap', async () => ({ employee: { id: 'staff', displayName: '员工' }, agents: [] }));
-    await backend.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(backend);
     const protection = { encrypt: async v => Buffer.from(v).toString('base64'), decrypt: async v => Buffer.from(v, 'base64').toString() };
     let app;
     try {
@@ -53,7 +54,7 @@ test('a separately installed employee client activates once and reopens without 
         return { employee: { id: 'staff', displayName: '员工' }, agents: [{ id: 'staff-agent', displayName: '岗位助手', presetName: '岗位员工' }] };
     });
     backend.post('/v1/employee/logout', async () => ({ revoked: true }));
-    await backend.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(backend);
     // Storage boundary fixture; real Windows DPAPI is separately exercised live.
     const protection = { encrypt: async token => 'protected:' + Buffer.from(token).toString('base64'), decrypt: async token => Buffer.from(token.slice(10), 'base64').toString() };
     let app;
@@ -91,7 +92,7 @@ test('a second client window cannot activate while sign-out is still completing'
         return { employee: { id: 'staff' }, agents: [] };
     });
     backend.post('/v1/employee/logout', async () => { revoked = true; entered(); await paused; return { revoked: true }; });
-    await backend.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(backend);
     const protection = { encrypt: async v => Buffer.from(v).toString('base64'), decrypt: async v => Buffer.from(v, 'base64').toString() };
     let app, logout;
     try {

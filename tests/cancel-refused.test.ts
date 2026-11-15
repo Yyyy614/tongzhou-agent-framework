@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import { test, expect } from 'vitest';
 import Fastify from 'fastify';
 import { RemoteAgentAdapter } from '../src/remote-runtime.js';
@@ -17,7 +18,7 @@ test('a refused remote cancellation does not claim that external execution stopp
             result = { state: finish ? 'cancelled' : 'running' };
         return { jsonrpc: '2.0', id: rpc.id, result };
     });
-    await server.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(server);
     const adapter = new RemoteAgentAdapter({ url: server.listeningOrigin + '/rpc' });
     const observed = adapter.run('wait', { companyId: 'one', principalId: 'alice', agentId: 'worker', runId: 'host-run', pluginId: '@example/conformance', pluginVersion: '0.1.0', gateway: { modelURL: 'http://127.0.0.1/model', mcpURL: 'http://127.0.0.1/mcp', token: 'fixture' } }).catch(e => e).finally(() => { ended = true; });
     try {

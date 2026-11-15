@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import { test, expect } from 'vitest';
 import Fastify from 'fastify';
 import { mkdir, mkdtemp } from 'node:fs/promises';
@@ -21,7 +22,7 @@ test('a real Harness coordinator delegates through MCP to a separately owned rem
         events.push(['content_block_stop', { type: 'content_block_stop', index: 0 }], ['message_delta', { type: 'message_delta', delta: { stop_reason: final ? 'end_turn' : 'tool_use', stop_sequence: null }, usage: { output_tokens: 20 } }], ['message_stop', { type: 'message_stop' }]);
         return reply.header('content-type', 'text/event-stream').send(events.map(([name, data]) => `event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join(''));
     });
-    await upstream.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(upstream);
     const remote = Fastify();
     let executedBy = '';
     remote.post('/rpc', async (request) => {
@@ -35,7 +36,7 @@ test('a real Harness coordinator delegates through MCP to a separately owned rem
             result = { output: 'Child summary only', usage: { inputTokens: 10, outputTokens: 3 } };
         return { jsonrpc: '2.0', id: rpc.id, result };
     });
-    await remote.listen({ host: '127.0.0.1', port: 0 });
+    await listenHttp(remote);
     await mkdir('.test-data', { recursive: true });
     const host = await createFramework({ root: await mkdtemp(resolve('.test-data/harness-delegate-')), connections: { 'connection:child': { url: remote.listeningOrigin + '/rpc' } } });
     const app = await createServer(host);
@@ -49,7 +50,7 @@ test('a real Harness coordinator delegates through MCP to a separately owned rem
         await host.putAgent({ id: 'child', ownerId: 'alice', companyId: 'example', pluginId: '@example/conformance', pluginVersion: '0.1.0', allowedTools: [], runtime: 'remote', connectionRef: 'connection:child' });
         await host.putAgent({ id: 'coord', ownerId: 'coordinator', companyId: 'example', pluginId: '@example/conformance', pluginVersion: '0.1.0', allowedTools: [], delegates: ['child'] });
         await queue.open();
-        await app.listen({ host: '127.0.0.1', port: 0 });
+        await listenHttp(app);
         await queue.startWorker();
         const parent = await queue.submit({ principalId: 'coordinator', agentId: 'coord', prompt: 'Delegate one task to child.', idempotencyKey: 'one' });
         await expect.poll(async () => (await queue.get(parent.id, 'coordinator')).state, { timeout: 15000, interval: 100 }).toBe('succeeded');

@@ -1,3 +1,4 @@
+import { listenHttp } from './helpers/http-server.js';
 import { test, expect } from 'vitest';
 import Fastify from 'fastify';
 import { mkdir, mkdtemp } from 'node:fs/promises';
@@ -17,7 +18,7 @@ test('native workspace reads only active job context and forwards revisioned wor
     app.get('/v1/work/:id/history',async()=>[{kind:'created'}]);
     app.post('/v1/work/:id/control',async req=>{calls.push(req.body);return{revision:4};});
     app.post('/v1/work/:id/reconcile',async(_req,reply)=>reply.code(403).send({error:{code:'PERMISSION_DENIED',message:'Not authorized'}}));
-    await app.listen({host:'127.0.0.1',port:0});await mkdir('.test-data',{recursive:true});
+    await listenHttp(app);await mkdir('.test-data',{recursive:true});
     const {createCompanySession}=await import('../client/company-session.mjs');
     const session=await createCompanySession({serverURL:app.listeningOrigin,dataDir:await mkdtemp(resolve('.test-data/company-studio-')),protection:{encrypt:async(v:string)=>v,decrypt:async(v:string)=>v},runtime:{start:async()=>{},stop:async()=>{}}});
     try{
