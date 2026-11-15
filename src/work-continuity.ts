@@ -13,7 +13,7 @@ export interface WorkInput {
     idempotencyKey:string;
     assignments:Array<{agentId:string;prompt:string}>;
 }
-export type WorkEntry={kind:'http'}|{kind:'control_resume'}|{kind:'bot';channelId:string;conversationId:string;messageId:string};
+export type WorkEntry={kind:'http'}|{kind:'control_resume'}|{kind:'bot';channelId:string;conversationId:string;messageId:string}|{kind:'event';sourceId:string;eventId:string;threadId:string;generation:number;policyRevision:number};
 export interface WorkInputReceipt {
     workId:string;
     inputId:string;
@@ -62,6 +62,7 @@ export class WorkContinuity {
             if(options){const priorControl=(await client.query('SELECT input_hash,data FROM work_controls WHERE request_key=$1',[controlKey])).rows[0];if(priorControl){if(priorControl.input_hash!==contentHash(options.resume))fail('CONFLICT','Control command identity changed');await client.query('COMMIT');return priorControl.data.receipt;}}
             const prior=(await client.query('SELECT input_hash,data FROM work_inputs WHERE request_key=$1',[key])).rows[0];
             if(prior){if(prior.input_hash!==hash)fail('CONFLICT','Work input key was reused with different content');await client.query('COMMIT');return prior.data.receipt;}
+            if(entry.kind==='event')await this.host.events.authorizeInput(client,actor.id,id,input.assignments.map(a=>a.agentId),entry);
             if(snapshot.revision!==input.revision)fail('CONFLICT','Work changed; read its current revision before continuing');
             if(options){const pending=await this.work.control.unsettled(client,id,snapshot);if(pending.running||pending.unknown||!['waiting','stopped','reconciliation_required'].includes(snapshot.work.control_mode)&&snapshot.state!=='needs_attention')fail('CONFLICT','Work must be stopped/waiting and all uncertain results reconciled before resuming');}
             else if(snapshot.work.control_mode!=='active'||!['waiting_review','changes_requested','completed'].includes(snapshot.state)||!snapshot.tasks.length||snapshot.tasks.some(t=>t.state!=='succeeded'))fail('CONFLICT','Finish and reconcile the current round before explicitly continuing');

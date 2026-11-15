@@ -23,11 +23,13 @@ export interface TaskRequest {
     workControlRevision?:number;
 }
 export interface TaskExecutor {
+    assessEvent?(input: import('./event-routing.js').EventAssessment): Promise<import('./event-routing.js').EventDecision>;
     stopWork?(workId:string):Promise<void>;
     run(request: TaskRequest): Promise<{
         id: string;
         state: string;
         output?: string;
+        report?: import('./work-results.js').StructuredReport;
     }>;
 }
 export class TaskQueue {
@@ -67,6 +69,7 @@ export class TaskQueue {
         return this.get(id, request.principalId);
     }
     async startWorker() {
+        this.host.events.start();
         await this.boss.work<{
             taskId: string;
         }>('agent-task', { localConcurrency: this.concurrency, groupConcurrency: 1, pollingIntervalSeconds: 0.5, batchSize: 1 }, async (jobs) => {
@@ -76,6 +79,8 @@ export class TaskQueue {
                     continue;
                 try {
                     const result = await this.executeAdmitted({ principalId: row.data.executionPrincipalId, initiatingPrincipalId: row.principal_id, agentId: row.agent_id, prompt: row.data.prompt, idempotencyKey: row.data.idempotencyKey, taskId: row.id, workId: row.data.workId,workRound:row.data.workRound,workInputId:row.data.workInputId,workControlRevision:row.data.workControlRevision, budgetGroupId: row.data.budgetGroupId ?? row.parent_id ?? row.id });
+                    await this.host.db.pool.query("UPDATE tasks SET data=data||$2::jsonb WHERE id=$1 AND state='running'", [row.id, JSON.stringify({ runId: result.id, output: result.output ?? '' })]);
+                    await this.host.results.capture(row, result);
                     await this.host.db.pool.query("UPDATE tasks SET state=$2,data=data||$3::jsonb,updated_at=now() WHERE id=$1 AND state='running'", [row.id, result.state, JSON.stringify({ runId: result.id, output: result.output ?? '' })]);
                 }
                 catch (error) {
@@ -126,9 +131,11 @@ export class TaskQueue {
     }
     async summaries(agentId: string, principalId: string) { await this.host.authorize(principalId, agentId, 'read'); return (await this.host.db.pool.query('SELECT id,state,left(data->>\'output\',2000) AS summary,data->>\'runId\' AS "runId",data->\'error\' AS error,updated_at FROM tasks WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 30', [agentId])).rows; }
     registerRoutes(app: import('fastify').FastifyInstance) {
+        app.get<{ Params: { id: string } }>('/v1/tasks/:id/result', async request => { const actor = await authenticateRequest(this.host, request); return this.host.results.view(actor.id, request.params.id); });
         const principal = async (request: any) => (await authenticateRequest(this.host, request)).id;
         const bot = new BotGateway(this.host, this);
         const work = new WorkCoordinator(this.host, this);
+        this.host.events.bind(this);
         work.registerRoutes(app);
         if(this.host.options.entries)new EntryConnections(this.host,work).registerRoutes(app);
         new WorkAssistant(this.host, work).registerRoutes(app);
@@ -160,6 +167,7 @@ export class TaskQueue {
         await this.host.coordination?.control.recoverInterrupted();return count;
     }
     async close() {
+        await this.host.events.close();
         if (this.opened) {
             this.opened = false;
             await this.boss.stop({ graceful: true, timeout: 150000 });

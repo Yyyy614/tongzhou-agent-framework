@@ -29,6 +29,7 @@ export class WorkControl{
     }
     async guard(request:TaskRequest,client:Pick<PoolClient,'query'>=this.host.db.pool){
         if(!request.workId)return;
+        await this.host.events.authorizeWork(request.workId,request.agentId,client,request.workInputId);
         const row=(await client.query('SELECT current_round,control_revision,control_mode,action_scope FROM work_items WHERE id=$1',[request.workId])).rows[0];
         if(!row||row.control_mode!=='active'||row.current_round!==(request.workRound??1)||row.control_revision!==(request.workControlRevision??0))fail('CANCELLED','Work control closed this execution attempt');
         const unknown=(await client.query("SELECT id FROM work_actions WHERE work_id=$1 AND action_scope=$2 AND state='unknown' LIMIT 1",[request.workId,row.action_scope])).rowCount;

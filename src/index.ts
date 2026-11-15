@@ -14,6 +14,10 @@ import { contentHash } from './contracts.js';
 import { PresetCatalog } from './presets.js';
 import { Organization } from './organization.js';
 import { Channels } from './channels.js';
+import { Resources } from './resources.js';
+import { WorkResults } from './work-results.js';
+import { CapabilityMarket } from './market.js';
+import { EventRouting } from './event-routing.js';
 import { workBody, type WorkCoordinator } from './work.js';
 import { reminderBody, type WorkAssistant } from './assistant.js';
 import type{EntryConnections,EntryTransportFactory}from'./entry-connections.js';
@@ -46,6 +50,10 @@ export class Framework {
     readonly memory: MemoryStore;
     readonly organization: Organization;
     readonly channels: Channels;
+    readonly resources: Resources;
+    readonly results: WorkResults;
+    readonly market: CapabilityMarket;
+    readonly events: EventRouting;
     coordination?: WorkCoordinator;
     assistant?: WorkAssistant;
     entries?:EntryConnections;
@@ -54,6 +62,10 @@ export class Framework {
         this.db = new Database(options.root, options.database);
         this.organization = new Organization(this);
         this.channels = new Channels(this);
+        this.resources = new Resources(this);
+        this.results = new WorkResults(this);
+        this.market = new CapabilityMarket(this);
+        this.events = new EventRouting(this);
         this.memory = new MemoryStore(options.root, this.db, (p,a,action)=>this.authorizeMemory(p,a,action));
     }
     async authorizeMemory(principalId:string,agentId:string,action:'read'|'execute',client?:Pick<PoolClient,'query'>){
@@ -63,6 +75,7 @@ export class Framework {
     }
     async installPlugin(path: string,principalId?:string) {const actor=principalId?await this.db.get<Actor>('actors',principalId):undefined;if(actor&&(!actor.active||actor.role!=='admin'))fail('PERMISSION_DENIED','Only administrators install packages');const p = await this.registry.install(path); await this.db.audit('plugin.installed', {principalId:actor?.id,companyId:actor?.companyId, pluginId: p.id, version: p.version, digest: p.digest }); return p; }
     async listTools() { return this.registry.tools(); }
+    async hasPermission(actor: Actor, agent: Agent, permission: string, toolRef?: string) { return actor.role === 'admin' || actor.permissions.includes(permission) || this.market.granted(actor, agent, permission, toolRef); }
     async approveTool(request: {
         principalId: string;
         targetPrincipalId: string;
@@ -264,9 +277,10 @@ export class Framework {
     async authorizeHostCapability(principalId: string, agentId: string, toolRef: string, permission: string, version?: string, client?: Pick<PoolClient, 'query'>) {
         const { actor, agent } = await this.authorize(principalId, agentId, 'execute', client);
         const plugin = this.pluginFor(agent, toolRef);
+        await this.market.guardTool(actor, agent, toolRef);
         const tool = plugin.manifest.provides.tools.find(t => plugin.id + ':' + t.id === toolRef);
         const legacy = plugin.manifest.schemaVersion === '0.1.0' && ['memory.self.read', 'memory.self.propose_write', 'report.self.write'].includes(permission);
-        if ((version && plugin.version !== version) || !tool || !agent.allowedTools.includes(toolRef) || (actor.role !== 'admin' && !actor.permissions.includes('tool.invoke:' + toolRef)) || (!legacy && !tool.hostServices?.includes(permission)) || !plugin.manifest.permissions.includes(permission) || !agent.servicePermissions?.includes(permission) || (actor.role !== 'admin' && !actor.permissions.includes(permission))) fail('PERMISSION_DENIED', 'Host service is not in effective grants');
+        if ((version && plugin.version !== version) || !tool || !agent.allowedTools.includes(toolRef) || !(await this.hasPermission(actor, agent, 'tool.invoke:' + toolRef, toolRef)) || (!legacy && !tool.hostServices?.includes(permission)) || !plugin.manifest.permissions.includes(permission) || !agent.servicePermissions?.includes(permission) || !(await this.hasPermission(actor, agent, permission, toolRef))) fail('PERMISSION_DENIED', 'Host service is not in effective grants');
         return { actor, agent, plugin };
     }
     private async hostService(workerKey: string, method: string, params: any) {
@@ -355,8 +369,9 @@ export class Framework {
         try {
             const { actor, agent } = await this.authorize(request.principalId, request.agentId);
             const plugin = this.pluginFor(agent, request.toolRef);
+            await this.market.guardTool(actor, agent, request.toolRef);
             const tool = plugin.manifest.provides.tools.find(t => plugin.id + ':' + t.id === request.toolRef);
-            if (!tool || !agent.allowedTools.includes(request.toolRef) || (actor.role !== 'admin' && !actor.permissions.includes('tool.invoke:' + request.toolRef)))
+            if (!tool || !agent.allowedTools.includes(request.toolRef) || !(await this.hasPermission(actor, agent, 'tool.invoke:' + request.toolRef, request.toolRef)))
                 fail('PERMISSION_DENIED', 'Tool is not in effective permissions');
             await this.registry.validateTool(plugin, tool, request.input);
             if (!request.idempotencyKey || request.idempotencyKey.length > 160)
@@ -461,6 +476,7 @@ export class Framework {
         }
     }
     async close() {
+        await this.events.close();
         await this.entries?.close();
         await this.assistant?.close();
         for (const worker of this.workers.values())
@@ -468,4 +484,4 @@ export class Framework {
         await this.db.close();
     }
 }
-export async function createFramework(options: FrameworkOptions) { const framework = new Framework(options); await framework.presets.open(options.presetDirectories); await framework.registry.open(); await framework.db.open(); await framework.channels.open(); return framework; }
+export async function createFramework(options: FrameworkOptions) { const framework = new Framework(options); await framework.presets.open(options.presetDirectories); await framework.registry.open(); await framework.db.open(); await framework.channels.open(); await framework.resources.open(); await framework.results.open(); await framework.market.open(); await framework.events.open(); return framework; }

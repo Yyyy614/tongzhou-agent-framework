@@ -79,7 +79,7 @@ export class PluginRegistry {
             fail('INVALID_PACKAGE', 'Package reference escaped package');
         return actual;
     }
-    async install(directory: string) {
+    async inspect(directory: string) {
         directory = await realpath(directory);
         const manifest = JSON.parse(await readFile(resolve(directory, 'agent-plugin.json'), 'utf8')) as PluginManifest;
         if (manifest.engine?.protocol !== '1.0' || !satisfies('0.1.0', manifest.engine?.framework ?? ''))
@@ -133,6 +133,11 @@ export class PluginRegistry {
         };
         await walk(directory);
         const digest = hash.digest('hex');
+        return { directory, manifest, digest };
+    }
+    async install(directory: string) {
+        const inspected = await this.inspect(directory);
+        const { manifest, digest } = inspected; directory = inspected.directory;
         const key = manifest.id + '@' + manifest.version;
         const prior = this.plugins.get(key);
         if (prior) {

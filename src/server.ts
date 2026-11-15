@@ -15,6 +15,9 @@ export async function createServer(host: Framework, options: { trustedProxyIP?: 
     registerAdmin(app, host);
     host.organization.registerRoutes(app);
     host.channels.registerRoutes(app);
+    host.resources.registerRoutes(app);
+    host.market.registerRoutes(app);
+    host.events.registerRoutes(app);
     registerEmployeeAccess(app, host);
     if(options.webProfile!==undefined&&!['classic','studio'].includes(options.webProfile))fail('INVALID_INPUT','Unknown company UI profile');
     registerWeb(app,{publicBasePath:options.publicBasePath??'',entries:host.options.entries===true,profile:options.webProfile??'classic'});
