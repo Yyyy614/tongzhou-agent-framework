@@ -46,9 +46,19 @@ node scripts/build-studio-desktop.mjs
 
 ## 跨电脑发行
 
-现有`package-company-harness.mjs`和`build-company-installer.mjs`提供固定HTTPS服务、独立设备命名空间、完整运行时复制和Windows安装流程。这条路径目前绑定旧的0.4开发构建清单，不会自动把0.5.1本机junction版转成便携版。
+0.6 预览支持从明确指定的构建清单生成完整 Windows 客户端。便携目录复制完整运行时并保留“同舟”图标及内置登录，不使用本机工作区的 junction。开发构建版本必须与发行版本一致；设备路径、身份、数据库及模型凭证不进入发行配置。
 
-发布最新同舟前，需要把打包清单明确切到已验收的0.5.1构建，保留完整runtime、应用图标、服务地址、设备命名空间和许可证，随后在干净Windows电脑验收。不能只复制本机exe或把开发账号、DPAPI身份、`.env`放进安装包。正式代码签名、自动更新与回滚需要另外配置和验收。
+```powershell
+node scripts/build-company-harness.mjs --profile=studio --channel=v06
+node scripts/package-company-harness.mjs --build-manifest .local/v06/build.json --output artifacts/v0.6.0-preview.1/Tongzhou --server-url http://127.0.0.1:55061 --namespace tongzhou-v06-preview --version 0.6.0 --manifest artifacts/v0.6.0-preview.1/package.json
+node scripts/build-company-installer.mjs --release-manifest artifacts/v0.6.0-preview.1/package.json --output artifacts/v0.6.0-preview.1/installer
+```
+
+指定的输出目录和发行清单必须尚不存在，构建不会覆盖旧发行。Windows 安装包按当前用户安装，使用独立的预览应用标识，卸载保留设备数据。完整便携目录也可压缩为 ZIP；不要仅复制 exe。
+
+公共体验包默认连接 `http://127.0.0.1:55061`，需要先运行同版本服务；它是员工客户端，不包含公司后端和预置试用账号。在其他电脑使用时，先修改 `resources/app/company.json` 的 `serverURL` 为管理员提供的 HTTPS 地址，再用公司账号登录。自托管步骤见 [QUICKSTART.md](QUICKSTART.md)。正式代码签名、自动更新与干净 Windows 设备验收不因本机便携包验证而视为完成。
+
+发布附件应包含安装包、完整便携 ZIP、说明、SHA256 清单及对应源码。校验 GitHub 附件的大小和 SHA256，并将测试预览标记为 prerelease；二进制不放进 Git 源码历史。
 
 ## 服务器与内网部署
 
