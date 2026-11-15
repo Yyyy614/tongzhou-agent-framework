@@ -103,7 +103,7 @@ npm test
 npm run build
 ```
 
-`pnpm check/test/build`执行同一套命令。真实模型验证单独执行`npm run smoke:harness`，会产生模型调用费用；测试替身不代表真实平台联调。
+`pnpm check/test/build`执行同一套命令。完整测试需要通过回环地址访问的专用PostgreSQL，详见快速开始。真实模型验证单独执行`npm run smoke:harness`，会产生模型调用费用；测试替身不代表真实平台联调。
 
 工作与权限边界见[设计](docs/FRAMEWORK_DESIGN.md)、[工作控制](docs/WORK_CONTROL_A2.md)。机器人接口、模拟协议测试、企业授权与实际收发分开验收。
 
