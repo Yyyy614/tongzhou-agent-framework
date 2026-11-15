@@ -27,7 +27,7 @@ sudo -n docker run --rm --name caf-staging-build --label com.company-agent.scope
   --cpus=1 --memory=1536m --pids-limit=256 --user=1000:1000 \
   --security-opt=no-new-privileges --cap-drop=ALL \
   --mount "type=bind,src=$ROOT/release,dst=/app" --workdir=/app \
-  "$NODE" sh -ec 'npm install --prefix /tmp/caf-pnpm --ignore-scripts --no-audit --no-fund pnpm@11.28.5; node /tmp/caf-pnpm/node_modules/pnpm/bin/pnpm.cjs install --prod --frozen-lockfile --ignore-scripts'
+  "$NODE" sh -ec 'npm install --prefix /tmp/caf-pnpm --ignore-scripts --no-audit --no-fund pnpm@11.28.5; node /tmp/caf-pnpm/node_modules/pnpm/bin/pnpm.mjs install --prod --frozen-lockfile --ignore-scripts'
 for kind in network volume; do
   name="$NET"; if [ "$kind" = volume ]; then name="$VOL"; fi
   if sudo -n docker "$kind" inspect "$name" >/dev/null 2>&1; then

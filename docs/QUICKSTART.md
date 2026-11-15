@@ -12,7 +12,7 @@
 node scripts/bootstrap-deps.mjs
 ```
 
-该脚本在项目工具目录准备pnpm并按锁文件安装，不修改系统代理。已有正确版本pnpm时也可以执行`pnpm install --frozen-lockfile`。仓库默认禁止依赖安装脚本，桌面运行时有单独的显式准备步骤。
+该脚本在项目工具目录准备pnpm，按锁文件安装根依赖及`connectors/im-bridge`的机器人SDK和二维码依赖，不修改系统代理。已有正确版本pnpm时也可以依次执行`pnpm install --frozen-lockfile`和`npm ci --prefix connectors/im-bridge --ignore-scripts`。完整测试需要这两组依赖，即使暂不接入真实机器人。仓库默认禁止依赖安装脚本，桌面运行时有单独的显式准备步骤。
 
 ## 2. 开发数据库
 

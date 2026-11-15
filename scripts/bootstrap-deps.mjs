@@ -19,4 +19,5 @@ function run(args) {
   if(result.status!==0) process.exit(result.status??1);
 }
 run([npmCli,'--userconfig='+resolve(root,'.npmrc'),'--proxy=false','--https-proxy=false','--fetch-retries=0','--fetch-timeout=30000','install','--prefix','.tools','--ignore-scripts','--no-audit','--no-fund','--package-lock=false','pnpm@11.28.5']);
-run([resolve(root,'.tools/node_modules/pnpm/bin/pnpm.cjs'),'install','--frozen-lockfile','--ignore-scripts','--config.proxy=false','--config.https-proxy=false','--reporter=append-only']);
+run([resolve(root,'.tools/node_modules/pnpm/bin/pnpm.mjs'),'install','--frozen-lockfile','--ignore-scripts','--config.proxy=false','--config.https-proxy=false','--reporter=append-only']);
+run([npmCli,'--userconfig='+resolve(root,'.npmrc'),'--proxy=false','--https-proxy=false','--fetch-retries=0','--fetch-timeout=30000','ci','--prefix','connectors/im-bridge','--ignore-scripts','--no-audit','--no-fund']);
