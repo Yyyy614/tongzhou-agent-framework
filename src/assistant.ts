@@ -15,6 +15,7 @@ export const reminderBody = { type: 'object', additionalProperties: false, requi
     agentId: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$' }, title: { type: 'string', minLength: 1, maxLength: 160 }, dueAt: { type: 'string', minLength: 10, maxLength: 40 }, details: { type: 'string', maxLength: 2000 }, subjectRef: subjectRefSchema, idempotencyKey: { type: 'string', minLength: 1, maxLength: 160 }
 } };
 export interface EventRequest { agentId: string; type: string; summary: string; subjectRef?: { system: string; id: string }; idempotencyKey: string; }
+export interface HostServiceSource {sourceAgentId?:string;sourceToolRef?:string;sourcePluginVersion?:string;}
 export const eventBody = { type: 'object', additionalProperties: false, required: ['agentId', 'type', 'summary', 'idempotencyKey'], properties: {
     agentId: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$' }, type: { type: 'string', pattern: '^[a-z][a-z0-9_.-]{0,79}$' }, summary: { type: 'string', minLength: 1, maxLength: 2400 }, subjectRef: subjectRefSchema, idempotencyKey: { type: 'string', minLength: 1, maxLength: 160 }
 } };
@@ -27,8 +28,12 @@ export class WorkAssistant {
     private running?: Promise<void>;
     private stopped = true;
     constructor(readonly host: Framework, readonly work: WorkCoordinator) { host.assistant = this; }
-    async requireCapability(principalId: string, permission: string, client?: Pick<PoolClient, 'query'>) {
+    async requireCapability(principalId: string, permission: string, client?: Pick<PoolClient, 'query'>,source?:HostServiceSource) {
         const actor = await this.host.db.get<Actor>('actors', principalId, client);
+        if(source?.sourceAgentId){
+            if(!source.sourceToolRef||!source.sourcePluginVersion)fail('PERMISSION_DENIED','A scoped service requires its complete source binding');
+            await this.host.authorizeHostCapability(principalId,source.sourceAgentId,source.sourceToolRef,permission,source.sourcePluginVersion,client);return actor;
+        }
         if (!actor.active || (actor.role !== 'admin' && !actor.permissions.includes(permission))) fail('PERMISSION_DENIED', 'Work assistant capability is not granted');
         return actor;
     }
@@ -39,7 +44,7 @@ export class WorkAssistant {
         const client = await this.host.db.pool.connect();
         try {
             await client.query('BEGIN'); await this.host.organization.lock(client);
-            const actor = await this.requireCapability(principalId, 'reminder.write', client);
+            const actor = await this.requireCapability(principalId, 'reminder.write', client,input);
             const { agent } = await this.host.organization.authorizeAgent(actor.id, input.agentId, 'dispatch', client);
             if (input.sourceAgentId) {
                 await this.host.authorizeHostCapability(actor.id, input.sourceAgentId, input.sourceToolRef!, 'reminder.write', input.sourcePluginVersion, client);
@@ -76,20 +81,20 @@ export class WorkAssistant {
             await client.query('COMMIT'); return this.reminder(updated);
         } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
     }
-    async inbox(principalId: string) {
-        const actor = await this.requireCapability(principalId, 'inbox.self.read');
+    async inbox(principalId: string,source?:HostServiceSource) {
+        const actor = await this.requireCapability(principalId, 'inbox.self.read',undefined,source);
         return (await this.host.db.pool.query('SELECT id,kind,data,read_at AS "readAt",created_at AS "createdAt" FROM assistant_inbox WHERE company_id=$1 AND principal_id=$2 ORDER BY created_at DESC LIMIT 100', [actor.companyId, actor.id])).rows;
     }
     async deliver(client: PoolClient, companyId: string, principalId: string, key: string, kind: string, data: unknown) {
         await client.query('INSERT INTO assistant_inbox(id,company_id,principal_id,key,kind,data) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(key) DO NOTHING', [randomUUID(), companyId, principalId, contentHash([companyId, principalId, key]), kind, JSON.stringify(data)]);
     }
-    async publishEvent(principalId: string, input: EventRequest, source = 'employee:' + principalId, metadata: { noAutomation?: boolean; originWorkId?: string } = {}) {
+    async publishEvent(principalId: string, input: EventRequest, source = 'employee:' + principalId, metadata: HostServiceSource & { noAutomation?: boolean; originWorkId?: string } = {}) {
         if (!this.host.registry.ajv.validate(eventBody, input)) fail('INVALID_INPUT', 'Event does not satisfy the common event contract');
         if (input.type.startsWith('work.') && input.type !== 'work.issue' && input.type !== 'work.unmatched') fail('INVALID_INPUT', 'Work system events are reserved for trusted task monitoring');
         const client = await this.host.db.pool.connect();
         try {
             await client.query('BEGIN'); await this.host.organization.lock(client);
-            const actor = await this.requireCapability(principalId, 'event.self.publish', client);
+            const actor = await this.requireCapability(principalId, 'event.self.publish', client,metadata);
             const scope = await this.host.authorize(actor.id, input.agentId, 'execute', client);
             if (actor.role !== 'admin' && scope.agent.ownerId !== actor.id) fail('PERMISSION_DENIED', 'Only an owned Agent can publish an employee event');
             const key = contentHash(['event', actor.id, source, input.idempotencyKey]), hash = contentHash(input);
@@ -135,7 +140,8 @@ export class WorkAssistant {
             await client.query('SAVEPOINT event_processing');
             try {
                 const actor = (await client.query('SELECT data FROM actors WHERE id=$1', [event.created_by])).rows[0]?.data as Actor | undefined;
-                if (!actor?.active || actor.companyId !== event.company_id || (event.source !== 'framework:work' && actor.role !== 'admin' && !actor.permissions.includes('event.self.publish'))) fail('PERMISSION_DENIED', 'Event producer is no longer authorized');
+                if (!actor?.active || actor.companyId !== event.company_id) fail('PERMISSION_DENIED', 'Event producer is no longer authorized');
+                if(event.source!=='framework:work')await this.requireCapability(actor.id,'event.self.publish',client,event.data);
                 const scope = await this.host.organization.authorizeAgent(actor.id, event.agent_id, 'dispatch', client);
                 if (actor.role !== 'admin' && scope.agent.ownerId !== actor.id) fail('PERMISSION_DENIED', 'Event source Agent changed ownership');
                 const rules = (await client.query("SELECT * FROM assistant_rules WHERE company_id=$1 AND data->>'eventType'=$2 AND data->>'enabled'='true' AND (data->'sourcePrincipalIds') ? $3 ORDER BY id LIMIT 8", [event.company_id, event.type, actor.id])).rows;
@@ -195,7 +201,7 @@ export class WorkAssistant {
             const reminders = (await client.query("SELECT * FROM assistant_reminders WHERE state='pending' AND due_at<=now() ORDER BY due_at LIMIT 25 FOR UPDATE SKIP LOCKED")).rows;
             for (const row of reminders) {
                 const creator = (await client.query('SELECT data FROM actors WHERE id=$1', [row.created_by])).rows[0]?.data as Actor | undefined;
-                let valid = !!creator?.active && (creator.role === 'admin' || creator.permissions.includes('reminder.write'));
+                let valid = !!creator?.active && (creator.role === 'admin' || creator.permissions.includes('reminder.write')||!!row.data.sourceAgentId);
                 if (valid) { try { const { agent } = await this.host.organization.authorizeAgent(row.created_by, row.agent_id, 'dispatch', client); valid = agent.ownerId === row.principal_id; } catch (error) { if ((error as any).code !== 'PERMISSION_DENIED') throw error; valid = false; } }
                 if (valid && row.data.sourceAgentId) {
                     const source = (await client.query('SELECT data FROM agents WHERE id=$1', [row.data.sourceAgentId])).rows[0]?.data;

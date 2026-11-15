@@ -6,15 +6,16 @@ import { fail } from './errors.js';
 export function registerAdminObservability(api: FastifyInstance, host: Framework) {
     const company = async (request: any) => (await host.db.get<Actor>('actors', request.principalId)).companyId;
     const visible = "(EXISTS(SELECT 1 FROM agents a WHERE a.id=e.data->>'agentId' AND a.data->>'companyId'=$1) OR EXISTS(SELECT 1 FROM actors p WHERE p.id=e.data->>'principalId' AND p.data->>'companyId'=$1) OR e.data->>'companyId'=$1)";
-    api.get('/plugins', async () => {
-        return Promise.all(host.registry.list().map(async (plugin) => {
+    api.get('/plugins', async request => {
+        const allowed=await host.market.plugins((request as any).principalId);
+        return Promise.all(host.registry.list().filter(p=>allowed.some(a=>a.id===p.id&&a.version===p.version)).map(async (plugin) => {
             const load = async (ref: string) => JSON.parse(await readFile(await host.registry.packagePath(plugin.directory, ref), 'utf8'));
             const tools = await Promise.all(plugin.manifest.provides.tools.map(async (tool) => ({ ...tool, ref: plugin.id + ':' + tool.id, inputSchema: await load(tool.inputSchema), outputSchema: await load(tool.outputSchema) })));
             return { id: plugin.id, version: plugin.version, digest: plugin.digest, enabled: plugin.enabled, permissions: plugin.manifest.permissions, presets: plugin.manifest.provides.presets, configSchema: await load(plugin.manifest.configSchema), tools };
         }));
     });
     api.post('/plugins/state', { schema: { body: { type: 'object', additionalProperties: false, required: ['pluginId', 'version', 'enabled'], properties: { pluginId: { type: 'string' }, version: { type: 'string' }, enabled: { type: 'boolean' } } } } }, async (request) => { await host.setPluginEnabled({ ...request.body as any, principalId: (request as any).principalId }); return { ok: true }; });
-    api.post('/plugins/validate', { schema: { body: { type: 'object', additionalProperties: false, required: ['pluginId', 'version'], properties: { pluginId: { type: 'string' }, version: { type: 'string' }, config: { type: 'object' } } } } }, async (request) => { const b = request.body as any; return host.validatePlugin(b.pluginId, b.version, b.config ?? {}); });
+    api.post('/plugins/validate', { schema: { body: { type: 'object', additionalProperties: false, required: ['pluginId', 'version'], properties: { pluginId: { type: 'string' }, version: { type: 'string' }, config: { type: 'object' } } } } }, async (request) => { const b = request.body as any; return host.validatePlugin(b.pluginId, b.version, b.config ?? {},(request as any).principalId); });
     api.get<{
         Querystring: {
             agentId?: string;

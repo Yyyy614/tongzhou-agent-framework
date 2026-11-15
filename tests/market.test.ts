@@ -1,5 +1,5 @@
 import { test, expect } from 'vitest';
-import { mkdir, mkdtemp, access } from 'node:fs/promises';
+import { mkdir, mkdtemp, access,readFile,readdir } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createFramework } from '../src/index.js';
 import { createServer } from '../src/server.js';
@@ -50,6 +50,25 @@ test('employees submit private candidates and install only reviewed, published s
     } finally { await app?.close(); await host.close(); }
 });
 
+test('scoped market service grants work through actual host services and remain revocable without global employee permissions',async()=>{
+    await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/market-services-'))}),app=await createServer(host);const {TaskQueue}=await import('../src/tasks.js');const queue=new TaskQueue(host,{async run(){return{id:'00000000-0000-4000-8000-000000000001',state:'succeeded',output:'bounded'};}});
+    try{
+        await host.installPlugin(resolve('fixtures/conformance-plugin'));for(const[id,role]of [['alice','employee'],['bob','employee'],['admin','admin']]as const)await host.putActor({id,role,companyId:'one',permissions:[]});await host.putAgent({id:'job',ownerId:'alice',companyId:'one',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});await queue.open();queue.registerRoutes(app);
+        const files:Array<{path:string;contentBase64:string}>=[];async function walk(path=''){for(const entry of await readdir(resolve('packages/work-assistant',path),{withFileTypes:true})){const name=path?path+'/'+entry.name:entry.name;if(entry.isDirectory())await walk(name);else files.push({path:name,contentBase64:(await readFile(resolve('packages/work-assistant',name))).toString('base64')});}}await walk();
+        const asset=await host.market.submit('bob',{assetKey:'@company/work-assistant',name:'Host services',summary:'Generic event and inbox services',version:'0.1.0',kind:'plugin',scope:'company',files,idempotencyKey:'one'}),review=await host.market.review('admin',asset.id,{revision:asset.revision,decision:'approve',reason:'Trusted framework package'});
+        const published=await host.market.publish('admin',asset.id,{revision:review.revision,reason:'Scoped pilot',grants:{principalIds:['alice'],presetIds:[],departmentIds:[],toolRefs:['@company/work-assistant:event.publish','@company/work-assistant:inbox.list','@company/work-assistant:reminder.schedule'],services:['event.self.publish','inbox.self.read','reminder.write']}});await host.market.install('alice',asset.id,'job');
+        await host.events.configure('admin',{name:'Scoped service events',enabled:true,mode:'execute',semantic:false,subscribeHostEvents:true,allowedPrincipalIds:['alice'],targets:[{agentId:'job',eventTypes:['validation.request'],description:'Generic assistance'}]});
+        const invoke=(tool:string,input:any,key:string)=>host.invoke({principalId:'alice',agentId:'job',toolRef:'@company/work-assistant:'+tool,input,idempotencyKey:key});
+        const emitted=await invoke('event.publish',{type:'validation.request',summary:'Actual scoped event'},'event');expect(emitted.outcome).toBe('succeeded');
+        expect((await invoke('inbox.list',{},'inbox')).outcome).toBe('succeeded');
+        expect((await invoke('reminder.schedule',{title:'Scoped reminder',dueAt:new Date(Date.now()+60000).toISOString()},'reminder')).outcome).toBe('succeeded');
+        await host.events.runOnce();expect((await host.db.pool.query('SELECT count(*)::int AS n FROM work_items')).rows[0].n).toBe(1);
+        expect((await host.db.get<any>('actors','alice')).permissions).toEqual([]);
+        await host.market.state('admin',asset.id,{revision:published.revision,state:'suspended',reason:'Revoke scoped services'});
+        await expect(invoke('event.publish',{type:'validation.request',summary:'must not publish'},'revoked')).rejects.toMatchObject({code:'PLUGIN_UNAVAILABLE'});
+    }finally{await queue.close();await app.close();await host.close();}
+});
+
 test('concurrent first submissions cannot create two maintainers for one capability namespace',async()=>{
     await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/market-race-'))}),app=await createServer(host);
     let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});const query=host.db.pool.query.bind(host.db.pool);let reads=0;
@@ -86,6 +105,11 @@ test('plugin candidates never execute on upload or review, and approved per-job 
         await host.putActor({id:'outside',companyId:'two',role:'admin',permissions:[]});
         const otherHeaders={authorization:'Bearer '+await host.issueAccessToken('outside')};
         expect(JSON.stringify((await app.inject({url:'/v1/plugins',headers:otherHeaders})).json())).not.toContain(key);
+        expect((await app.inject({url:'/v1/admin/plugins',headers:otherHeaders})).body).not.toContain(key);
+        expect((await app.inject({url:'/v1/admin/plugins/validate',method:'POST',headers:otherHeaders,payload:{pluginId:key,version:'0.1.0'}})).statusCode).toBe(409);
+        await expect(access(marker)).rejects.toMatchObject({code:'ENOENT'});
+        expect((await app.inject({url:'/v1/admin/plugins/state',method:'POST',headers:otherHeaders,payload:{pluginId:key,version:'0.1.0',enabled:false}})).statusCode).toBe(403);
+        expect(host.registry.get(key,'0.1.0').enabled).toBe(true);
         await host.putAgent({id:'outside-job',ownerId:'outside',companyId:'two',pluginId:key,pluginVersion:'0.1.0',allowedTools:[tool]});
         await expect(host.invoke({principalId:'outside',agentId:'outside-job',toolRef:tool,input:{text:'cross-company'},idempotencyKey:'blocked'})).rejects.toMatchObject({code:'PLUGIN_UNAVAILABLE'});
         expect((await api('bob', '/v1/market/releases/' + item.id + '/install', 'POST', { agentId: 'bob-job' })).statusCode).toBe(200);

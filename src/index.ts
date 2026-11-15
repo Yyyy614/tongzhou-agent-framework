@@ -193,6 +193,7 @@ export class Framework {
         const actor = await this.db.get<Actor>('actors', request.principalId);
         if (!actor.active || actor.role !== 'admin')
             fail('PERMISSION_DENIED', 'Only administrators manage plugins');
+        await this.market.guardGlobalState(request.pluginId,request.version);
         await this.registry.setEnabled(request.pluginId, request.version, request.enabled);
         await this.db.audit('plugin.enabled_changed', request);
     }
@@ -324,8 +325,8 @@ export class Framework {
             return this.assistant.createReminder(actor.id, { ...params.input, agentId: params.input?.agentId ?? agent.id, ...source, idempotencyKey: 'plugin:' + params.invocationId });
         }
         if (method === 'reminder.list') return { items: await this.assistant.reminders(actor.id) };
-        if (method === 'inbox.list') return { items: await this.assistant.inbox(actor.id) };
-        if (method === 'event.publish') return this.assistant.publishEvent(actor.id, { ...params.input, agentId: agent.id, idempotencyKey: 'plugin:' + params.invocationId }, 'plugin:' + plugin.id, { noAutomation: !!task?.data.workId, originWorkId: task?.data.workId });
+        if (method === 'inbox.list') return { items: await this.assistant.inbox(actor.id,source) };
+        if (method === 'event.publish') return this.assistant.publishEvent(actor.id, { ...params.input, agentId: agent.id, idempotencyKey: 'plugin:' + params.invocationId }, 'plugin:' + plugin.id, { ...source,noAutomation: !!task?.data.workId, originWorkId: task?.data.workId });
         fail('UNSUPPORTED_CAPABILITY', 'Unknown host service');
     }
     async putActor(actor: Actor) {

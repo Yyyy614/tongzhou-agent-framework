@@ -33,7 +33,7 @@ Harness 的工作资料页可选协作工作及资源。`PUT /v1/harness/clients
 
 实际模型网关使用宿主管理的单回合消息：不透传客户端的旧 system、整段旧会话或客户端自报工具结果。同轮只接纳模型真实返回及公司 MCP 的确认回执。需要旧成果时，读取检查点的结果引用，再按权限展开来源。预算超限或来源变更会拒绝后续请求，而不是静默切掉必要证据。
 
-工具新增：`resource_index`、`resource_read`、`resource_create`、`skill_index`、`skill_read`；获准的岗位还可使用 `work_report` 提交 `{facts,artifacts,issues}`。执行中的管理工作可用 `resource_create.shareWithWork=true` 共享成果给该项工作当前获准参与者；私人对话不能借一个参考 workId 扩大共享。
+工具新增：`resource_index`、`resource_read`、`resource_create`、`skill_index`、`skill_read`；获准的岗位还可使用 `work_report` 提交 `{facts,artifacts,issues}`。模型创建的成果默认私有，不能自动改成工作共享或公司发布；员工需在资料页检查内容与来源后明确选择读者。读取别人的来源不自动获得再发布权。
 
 `GET /v1/tasks/:id/result` 返回宿主控制事实、可读的 Agent 报告、成果引用及未决问题。模型事实标为 `agent_reported`，不能代替审批或成功回执；被撤权的引用不会出现在接收者摘要中。完整输出保存在本人私有资源中。旧任务按原有规则兼容，新任务即使成果登记失败也不会回退共享原文。
 

@@ -235,6 +235,7 @@ export class CapabilityMarket {
         const actor=await this.actor(principalId),origins=(await this.host.db.pool.query("SELECT * FROM market_assets WHERE kind='plugin' AND asset_key=$1 AND version=$2 AND data ? 'publishedBy'",[pluginId,version])).rows;
         if(origins.length&&!origins.some(row=>row.state==='published'&&this.visible(actor,row)))fail('PLUGIN_UNAVAILABLE','Market plugin execution is outside the current publication scope');
     }
+    async guardGlobalState(pluginId:string,version:string){if((await this.host.db.pool.query("SELECT 1 FROM market_assets WHERE kind='plugin' AND asset_key=$1 AND version=$2 AND data ? 'publishedBy'",[pluginId,version])).rowCount)fail('PERMISSION_DENIED','Change a company market release through its publication controls, not the shared runtime switch');}
     async uninstall(principalId: string, id: string, agentId: string) {
         const { actor, agent } = await this.host.authorize(principalId, agentId); requireUuid(id);
         if (actor.id !== agent.ownerId && actor.role !== 'admin') fail('PERMISSION_DENIED', 'Remove capabilities only from your own job');

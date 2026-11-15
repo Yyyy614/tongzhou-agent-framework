@@ -94,7 +94,7 @@ export class Resources {
         if (!row || !await this.canRead(actor, row,client)) fail('NOT_FOUND', 'Resource is unavailable');
         const data = (await client.query('SELECT * FROM resource_versions WHERE resource_id=$1 AND version=$2', [id, version ?? row.current_version])).rows[0];
         if (!data) fail('NOT_FOUND', 'Resource version is unavailable');
-        return { ...this.metadata(row, data), body: data.body.slice(offset, offset + limit), offset, nextOffset: offset + limit < data.body.length ? offset + limit : null, totalChars: data.body.length, sourceRefs: data.source_refs };
+        return { ...this.metadata(row, data),resourceRef:{id:row.id,version:data.version}, body: data.body.slice(offset, offset + limit), offset, nextOffset: offset + limit < data.body.length ? offset + limit : null, totalChars: data.body.length, sourceRefs: data.source_refs };
         });
     }
     async index(principalId: string, query = '', domain?: string) {
