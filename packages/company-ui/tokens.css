@@ -1,3 +1,17 @@
 /* Company surfaces share these names; upstream Harness tokens stay owned by Harness. */
 :root{--cu-font:-apple-system,BlinkMacSystemFont,"Microsoft YaHei","PingFang SC","Segoe UI Variable","Segoe UI",sans-serif;--cu-bg:#f4f5f7;--cu-panel:#fff;--cu-sidebar:#edf0f2;--cu-text:#1f292e;--cu-secondary:#52636c;--cu-tertiary:#62717b;--cu-line:#dce2e5;--cu-accent:#087f73;--cu-accent-hover:#06695f;--cu-accent-soft:#e3efeb;--cu-danger:#ad3440;--cu-warning:#875e18;--cu-success:#256b50;--cu-shadow:0 16px 48px #273c4b0c,0 1px 3px #273c4b08;--cu-radius:16px;--cu-control-radius:9px;--cu-focus:0 0 0 3px #16837036;--cu-material:rgba(242,245,247,.88)}
 @media(prefers-reduced-transparency:reduce){:root{--cu-material:#f2f5f7}}
+/* CSS pixels follow the user's native display scale; never compensate with device scale flags. */
+:root{
+  --cu-type-display:32px;
+  --cu-type-title:30px;
+  --cu-type-section:22px;
+  --cu-type-card:18px;
+  --cu-type-body:16px;
+  --cu-type-control:15px;
+  --cu-type-secondary:14px;
+  --cu-type-meta:13px;
+  --cu-control-height:44px;
+  --cu-primary-height:48px;
+  --cu-row-action-height:36px;
+}

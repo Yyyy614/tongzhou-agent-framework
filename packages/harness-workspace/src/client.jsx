@@ -24,7 +24,7 @@ function WorkInspector({initial,call,onClose,refresh}){
     const [reason,setReason]=useState(''),[prompt,setPrompt]=useState(''),[target,setTarget]=useState(initial.assignments?.[0]?.agentId??''),[decision,setDecision]=useState('approve'),[action,setAction]=useState('wait');
     const [detail,setDetail]=useState(null),[history,setHistory]=useState(null),[key,setKey]=useState(()=>crypto.randomUUID());
     const [refs,setRefs]=useState(''),[chosen,setChosen]=useState(''),[outcome,setOutcome]=useState('not_executed'),[receipt,setReceipt]=useState(''),[closed,setClosed]=useState(false);
-    useEffect(()=>{let alive=true;Promise.all([call('read-work',initial.id),call('work-control-state',initial.id)]).then(([w,r])=>{if(alive){setWork(w);setRecord(r);}},e=>{if(alive)setError(e.message);});return()=>{alive=false;};},[initial.id]);
+    useEffect(()=>{let alive=true;call('read-work',initial.id).then(async w=>{const r=w.canControl||w.canReconcile?await call('work-control-state',initial.id):null;if(alive){setWork(w);setRecord(r);}}).catch(e=>{if(alive)setError(e.message);});return()=>{alive=false;};},[initial.id]);
     const update=(set,value)=>{set(value);setKey(crypto.randomUUID());};
     async function run(fn){setBusy(true);setError('');try{await fn();}catch(e){setError(e.message);}finally{setBusy(false);}}
     async function submit(event){event.preventDefault();await run(async()=>{

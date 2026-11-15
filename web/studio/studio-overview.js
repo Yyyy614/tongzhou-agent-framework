@@ -26,5 +26,5 @@ export async function studioOverview(ctx){
             h('p',{class:'studio-private-note'},icon('shield',16),'私人记忆按独立授权读取；管理关系不自动扩大访问范围。'));
         body.replaceChildren(status,h('div',{class:'studio-overview-grid'},h('div',{},focus,h('h2',{class:'studio-section-title'},'让下一次协作更顺畅'),h('div',{class:'studio-shortcuts'},shortcuts)),aside));
     }
-    await load();return h('div',{},heading('把需要处理的事，放到眼前。','从工作结果出发，再按需配置组织与能力。',liveRefresh(ctx,load)),body);
+    await load();return h('div',{},heading('工作看板','先处理待核对与异常工作，再查看团队运行情况。',liveRefresh(ctx,load)),body);
 }
