@@ -26,11 +26,12 @@ test('a busy HTTP test port falls back before serving requests without disturbin
 
 test('unsafe explicit ports and application startup errors are not hidden by bind retries', async () => {
     const unsafe = Fastify(), broken = Fastify();
-    broken.addHook('onReady', async () => { throw Error('fixture startup failed'); });
+    const permissionError = Object.assign(Error('fixture startup failed'), { code: 'EACCES', syscall: 'open' });
+    broken.addHook('onReady', async () => { throw permissionError; });
     try {
         await expect(listenHttp(unsafe, 6667)).rejects.toThrow('49152..65535');
         expect(unsafe.server.listening).toBe(false);
-        await expect(listenHttp(broken)).rejects.toThrow('fixture startup failed');
+        await expect(listenHttp(broken)).rejects.toBe(permissionError);
         expect(broken.server.listening).toBe(false);
     } finally { await unsafe.close(); await broken.close(); }
 });

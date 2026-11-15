@@ -11,8 +11,8 @@ export async function listenHttp(server: FastifyInstance, firstPort?: number) {
             throw new RangeError('Test HTTP ports must be integers in 49152..65535');
         try { return await server.listen({ host: '127.0.0.1', port }); }
         catch (error) {
-            const code = (error as NodeJS.ErrnoException)?.code;
-            if (code !== 'EADDRINUSE' && code !== 'EACCES') throw error;
+            const fault = error as NodeJS.ErrnoException;
+            if (fault?.syscall !== 'listen' || fault.code !== 'EADDRINUSE' && fault.code !== 'EACCES') throw error;
             lastError = error;
         }
     }
