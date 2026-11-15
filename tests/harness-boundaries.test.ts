@@ -19,7 +19,7 @@ async function fixture(delegation = false) {
     await host.putAgent({ id: 'target', ownerId: 'bob', companyId: 'one', pluginId: '@example/conformance', pluginVersion: '0.1.0', allowedTools: [] });
     const app = await createServer(host), upstream = Fastify();
     let calls = 0;
-    upstream.post('/v1/messages', async (request) => { calls++; const body = request.body as any; return { id: 'fixture', type: 'message', role: 'assistant', model: 'deepseek-flash', content: [{ type: 'text', text: 'native result' }], stop_reason: body.messages[0].content === 'tool' ? 'tool_use' : 'end_turn', stop_sequence: null, usage: { input_tokens: 80, output_tokens: 12 } }; });
+    upstream.post('/v1/messages', async (request) => { calls++; const body = request.body as any; return { id: 'fixture', type: 'message', role: 'assistant', model: 'deepseek-flash', content: [{ type: 'text', text: 'native result' }], stop_reason: body.messages.length===1&&body.messages[0].content === 'tool' ? 'tool_use' : 'end_turn', stop_sequence: null, usage: { input_tokens: 80, output_tokens: 12 } }; });
     await listenHttp(upstream);
     const runtime = new HarnessRuntime(app, host, { apiKey: 'fixture', upstreamURL: upstream.listeningOrigin });
     const queue = new TaskQueue(host, { async run() { return { id: '00000000-0000-4000-8000-000000000001', state: 'succeeded', output: 'child summary' }; } });
@@ -185,7 +185,8 @@ test('an authorized native coordinator has a durable parent and can delegate wit
         await f.queue.startWorker();
         await expect.poll(async () => (await f.queue.get(child.id, 'alice')).state, { timeout: 3000 }).toBe('succeeded');
         const status = (await f.tool(l, 'task_status', { taskId: child.id })).json();
-        expect(JSON.parse(status.result.content[0].text).summary).toBe('child summary');
+        expect(JSON.parse(status.result.content[0].text).summary).toBe('执行已结束，等待人工核对');
+        expect(JSON.stringify(status)).not.toContain('child summary');
         expect(JSON.stringify(status)).not.toContain('markdown');
         await f.model(l, 'finish');
         expect((await f.queue.get(parent, 'alice')).state).toBe('succeeded');

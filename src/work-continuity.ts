@@ -107,7 +107,7 @@ export class WorkContinuity {
         });
     }
     async checkpointForTask(principalId:string,taskId:string){
-        return this.read(async client=>{
+        const projection=await this.read(async client=>{
         requireUuid(taskId);
         const task=(await client.query('SELECT * FROM tasks WHERE id=$1',[taskId])).rows[0];
         if(!task?.data.workInputId)fail('NOT_FOUND','Task has no continuation checkpoint');
@@ -122,5 +122,7 @@ export class WorkContinuity {
         await client.query('INSERT INTO audit(id,type,data) VALUES($1,$2,$3)',[randomUUID(),'work.checkpoint_read',JSON.stringify({companyId:actor.companyId,principalId:actor.id,agentId:agent.id,workId:task.data.workId,taskId,checkpointId:checkpoint.id})]);
         return{checkpointId:checkpoint.id,sourceRound:checkpoint.round,sourceRevision:checkpoint.revision,confirmedTask:reference?{...reference,summary:String(previous?.data.output??'').slice(0,2000)}:null,confirmedActions,actionReceiptsLimit:32,receiptExcerptChars:1000,summaryTruncated:String(previous?.data.output??'').length>2000,notice:'These are confirmed previous results, not permission to replay actions. Execute only the new authorized instruction.'};
         });
+        const result=projection.confirmedTask?await this.host.results.view(principalId,projection.confirmedTask.taskId):null;
+        return result?{...projection,summaryTruncated:false,confirmedTask:{...projection.confirmedTask,summary:result.summary,result}}:projection;
     }
 }

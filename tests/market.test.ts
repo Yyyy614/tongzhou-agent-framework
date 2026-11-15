@@ -21,6 +21,9 @@ test('employees submit private candidates and install only reviewed, published s
         const uploaded = await api('alice', '/v1/market/submissions', 'POST', payload);
         expect(uploaded.statusCode).toBe(201); const item = uploaded.json();
         expect(item.state).toBe('submitted'); expect(item.checks.passed).toBe(true);
+        const preview=await api('admin','/v1/market/submissions/'+item.id+'/file?path=SKILL.md');
+        expect(preview.statusCode).toBe(200);expect(preview.json().text).toContain('不要编造');
+        expect((await api('bob','/v1/market/submissions/'+item.id+'/file?path=SKILL.md')).statusCode).toBe(404);
         expect((await api('bob', '/v1/market/releases')).json().items).toEqual([]);
         expect((await api('outside', '/v1/market/submissions/' + item.id)).statusCode).toBe(404);
         expect((await api('bob', '/v1/market/releases/' + item.id + '/install', 'POST', { agentId: 'bob-job' })).statusCode).toBe(409);

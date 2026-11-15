@@ -28,6 +28,11 @@ test('work returns control facts and authorized evidence instead of a raw output
         expect(result.statusCode).toBe(200); expect(result.json().control.state).toBe('succeeded');
         expect(result.json().facts).toHaveLength(1); expect(result.json().artifacts[0]).toMatchObject({ id: evidence.id, version: 1 });
         expect(result.json().processAvailable).toBe(false);
+        const detail = await queue.get(view.assignments[0].taskId, 'admin');
+        expect(JSON.stringify(detail)).not.toContain('PROCESS-NOISE');
+        expect(detail.output).toBeUndefined();
+        expect(detail.result.summary).toContain('Necessary verified fact');
+        expect(JSON.stringify(await queue.summaries('job', 'admin'))).not.toContain('PROCESS-NOISE');
         const own = await app.inject({ url: '/v1/tasks/' + view.assignments[0].taskId + '/result', headers: { authorization: 'Bearer ' + await host.issueAccessToken('alice') } });
         expect(own.json().facts).toHaveLength(2); expect(own.json().processAvailable).toBe(true);
         const denied = await app.inject({ url: '/v1/tasks/' + view.assignments[0].taskId + '/result', headers: { authorization: 'Bearer ' + await host.issueAccessToken('bob') } });

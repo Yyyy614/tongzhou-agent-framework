@@ -33,7 +33,7 @@ export class CapabilityMarket {
     private reviewer(actor: Actor, row: any) { return actor.companyId === row.company_id && (actor.role === 'admin' || row.data.scope === 'department' && actor.departmentId === row.data.departmentId && actor.permissions.includes('market.review')); }
     private visible(actor: Actor, row: any) { return actor.companyId === row.company_id && (actor.id === row.owner_id || row.data.scope === 'company' || row.data.scope === 'department' && !!actor.departmentId && actor.departmentId === row.data.departmentId); }
     private dto(row: any, manage = false) {
-        return { id: row.id, assetKey: row.asset_key, version: row.version, kind: row.kind, state: row.state, revision: this.revision(row), digest: row.digest, name: row.data.name, summary: row.data.summary, scope: row.data.scope, departmentId: row.data.departmentId ?? null, submittedBy: row.owner_id, createdAt: row.created_at, ...(manage ? { checks: row.data.checks, review: row.data.review ?? null, files: row.data.files, grants: row.data.grants ?? noGrants() } : {}) };
+        return { id: row.id, assetKey: row.asset_key, version: row.version, kind: row.kind, state: row.state, revision: this.revision(row), digest: row.digest, name: row.data.name, summary: row.data.summary, scope: row.data.scope, departmentId: row.data.departmentId ?? null, submittedBy: row.owner_id, createdAt: row.created_at, ...(manage ? { checks: row.data.checks, review: row.data.review ?? null, files: row.data.files, inspection:row.data.inspection,grants: row.data.grants ?? noGrants() } : {}) };
     }
     private async row(actor: Actor, id: string, manage = false) {
         requireUuid(id); const row = (await this.host.db.pool.query('SELECT * FROM market_assets WHERE id=$1 AND company_id=$2', [id, actor.companyId])).rows[0];
@@ -62,13 +62,22 @@ export class CapabilityMarket {
             await this.actor(principalId, client as any);
             const concurrent = (await client.query('SELECT id FROM market_assets WHERE company_id=$1 AND asset_key=$2 AND version=$3', [actor.companyId, input.assetKey, input.version])).rows[0];
             if (concurrent) fail('CONFLICT', 'Capability submission changed concurrently');
-            const data = { name: input.name, summary: input.summary, scope: input.scope, departmentId: input.departmentId, directory, files: decoded.files.map(([path, body]) => ({ path, bytes: body.length })), checks, inspection, grants: noGrants() };
+            const data = { name: input.name, summary: input.summary, scope: input.scope, departmentId: input.departmentId, directory, files: decoded.files.map(([path, body]) => ({ path, bytes: body.length,digest:contentHash(body.toString('base64')) })), checks, inspection, grants: noGrants() };
             await client.query('INSERT INTO market_assets(id,company_id,owner_id,asset_key,version,kind,state,digest,input_hash,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)', [id, actor.companyId, actor.id, input.assetKey, input.version, input.kind, 'submitted', decoded.digest, hash, JSON.stringify(data)]);
             await client.query('INSERT INTO market_history(id,asset_id,principal_id,action,data) VALUES($1,$2,$3,$4,$5)', [randomUUID(), id, actor.id, 'submitted', JSON.stringify({ digest: decoded.digest, checks })]);
             await client.query('COMMIT'); return this.get(actor.id, id);
         } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
     }
     async get(principalId: string, id: string) { const actor = await this.actor(principalId); return this.dto(await this.row(actor, id, true), true); }
+    async file(principalId:string,id:string,path:string,offset=0){
+        const actor=await this.actor(principalId),row=await this.row(actor,id,true);
+        if(typeof path!=='string'||!row.data.files.some((f:any)=>f.path===path)||!Number.isInteger(offset)||offset<0)fail('NOT_FOUND','Reviewed package file is unavailable');
+        const body=await readFile(await this.host.registry.packagePath(row.data.directory,'./'+path));
+        if(row.data.files.find((f:any)=>f.path===path).digest!==contentHash(body.toString('base64')))fail('CONFLICT','Candidate file differs from submitted version');
+        if(body.includes(0))return{path,binary:true,bytes:body.length,text:'二进制资源，请通过受控审查工具核查。',nextOffset:null};
+        const value=body.toString('utf8');return{path,text:value.slice(offset,offset+16000),offset,nextOffset:offset+16000<value.length?offset+16000:null,digest:contentHash(body.toString('base64'))};
+    }
+    async history(principalId:string,id:string){const actor=await this.actor(principalId);await this.row(actor,id,true);return{items:(await this.host.db.pool.query('SELECT principal_id AS "principalId",action,data,created_at AS "createdAt" FROM market_history WHERE asset_id=$1 ORDER BY created_at',[id])).rows};}
     async submissions(principalId: string) {
         const actor = await this.actor(principalId), rows = (await this.host.db.pool.query('SELECT * FROM market_assets WHERE company_id=$1 ORDER BY created_at DESC LIMIT 200', [actor.companyId])).rows;
         return { items: rows.filter(row => row.owner_id === actor.id || this.reviewer(actor, row)).map(row => this.dto(row, true)) };
@@ -109,6 +118,10 @@ export class CapabilityMarket {
         const grants = input.grants ?? noGrants();
         if (!this.host.registry.ajv.validate(grantSchema, grants)) fail('INVALID_INPUT', 'Invalid installation policy');
         const inspection = await inspectPackage(this.host.registry, { ...candidate.data, assetKey: candidate.asset_key, kind: candidate.kind, version: candidate.version, files: candidate.data.files } as any, candidate.data.directory);
+        if(candidate.kind==='plugin'&&actor.role!=='admin')fail('PERMISSION_DENIED','Company administrators must approve execution of reviewed plugin code');
+        const declared=new Set((inspection as any).manifest?.provides.tools.map((tool:any)=>candidate.asset_key+':'+tool.id)??[]);
+        if(grants.toolRefs.some(tool=>!declared.has(tool))||grants.services.some(service=>!(inspection as any).manifest?.permissions.includes(service)))fail('INVALID_INPUT','Grants exceed the reviewed plugin declaration');
+        if((grants.toolRefs.length||grants.services.length)&&!grants.allCompany&&!grants.principalIds.length&&!grants.presetIds.length&&!grants.departmentIds.length)fail('INVALID_INPUT','Select an explicit grant audience');
         const decoded = decodePackage(await Promise.all(candidate.data.files.map(async (f: any) => ({ path: f.path, contentBase64: (await readFile(resolve(candidate.data.directory, f.path))).toString('base64') }))));
         if (decoded.digest !== candidate.digest || candidate.data.review.digest !== candidate.digest) fail('CONFLICT', 'Reviewed package contents changed');
         let resource: any;
@@ -122,7 +135,7 @@ export class CapabilityMarket {
             if ((grants.toolRefs.length || grants.services.length) && !grants.allCompany && !grants.principalIds.length && !grants.presetIds.length && !grants.departmentIds.length) fail('INVALID_INPUT', 'Select an explicit grant audience');
             if (resource) {
                 const access = { scope: row.data.scope, readerIds: row.data.scope === 'personal' ? [row.owner_id] : [], ...(row.data.scope === 'department' ? { departmentId: row.data.departmentId } : {}) };
-                await client.query('UPDATE company_resources SET access=$2,updated_at=now() WHERE id=$1', [resource.id, JSON.stringify(access)]); row.data.resourceRef = { id: resource.id, version: resource.version };
+                await client.query('UPDATE company_resources SET access=$2,access_epoch=access_epoch+1,updated_at=now() WHERE id=$1', [resource.id, JSON.stringify(access)]); row.data.resourceRef = { id: resource.id, version: resource.version };
             }
             row.data.grants = grants; row.state = 'published'; row.data.publishedBy = publisher.id;
         });
@@ -132,7 +145,7 @@ export class CapabilityMarket {
         return this.change(principalId, id, input, input.state, async (row, _actor, client) => {
             if (!['published', 'suspended'].includes(row.state)) fail('CONFLICT', 'Only published releases can change availability');
             row.state = input.state;
-            if (row.data.resourceRef) await client.query('UPDATE company_resources SET active=$2,updated_at=now() WHERE id=$1', [row.data.resourceRef.id, input.state === 'published']);
+            if (row.data.resourceRef) await client.query('UPDATE company_resources SET active=$2,access_epoch=access_epoch+1,updated_at=now() WHERE id=$1', [row.data.resourceRef.id, input.state === 'published']);
         });
     }
     private audience(actor: Actor, agent: Agent, grants: MarketGrants) { return grants.allCompany || grants.principalIds.includes(actor.id) || !!agent.preset && grants.presetIds.includes(agent.preset.id) || !!actor.departmentId && grants.departmentIds.includes(actor.departmentId); }
@@ -144,9 +157,13 @@ export class CapabilityMarket {
         try {
             await client.query('BEGIN'); await this.host.organization.lock(client);
             const current = (await client.query('SELECT data FROM agents WHERE id=$1 FOR UPDATE', [agentId])).rows[0].data as Agent;
-            if (contentHash(current) !== contentHash(agent) || (await client.query("SELECT 1 FROM runs WHERE agent_id=$1 AND state='running'", [agentId])).rowCount) fail('CONFLICT', 'Finish the active turn before changing capabilities');
+            const freshActor=await this.actor(actor.id,client as any),freshOwner=await this.actor(owner.id,client as any);
+            if(freshActor.companyId!==current.companyId||!freshActor.active||freshActor.id!==current.ownerId&&freshActor.role!=='admin'||freshOwner.id!==current.ownerId||freshOwner.companyId!==current.companyId)fail('PERMISSION_DENIED','Job ownership changed');
+            if (contentHash(current) !== contentHash(agent) || this.host.hasActiveInvocation(agentId) || (await client.query("SELECT 1 FROM runs WHERE agent_id=$1 AND state='running'", [agentId])).rowCount) fail('CONFLICT', 'Finish the active turn before changing capabilities');
             const release = (await client.query('SELECT * FROM market_assets WHERE id=$1 FOR SHARE', [id])).rows[0];
             if (release.state !== 'published' || !this.visible(await this.actor(owner.id, client as any), release)) fail('CONFLICT', 'Release is no longer available');
+            const releaseGrants=release.data.grants as MarketGrants;
+            if((releaseGrants.principalIds.length||releaseGrants.presetIds.length||releaseGrants.departmentIds.length||releaseGrants.allCompany)&&!this.audience(freshOwner,current,releaseGrants))fail('PERMISSION_DENIED','This release is currently limited to the approved pilot audience');
             const prior = (await client.query('SELECT * FROM market_installations WHERE asset_id=$1 AND agent_id=$2', [id, agentId])).rows[0];
             if (prior?.active) { await client.query('COMMIT'); return { installed: true, release: this.dto(row), agentId }; }
             if ((await client.query('SELECT count(*)::int AS n FROM market_installations WHERE agent_id=$1 AND active=true', [agentId])).rows[0].n >= 16) fail('BUDGET_EXCEEDED', 'Job capability limit reached');
@@ -155,8 +172,8 @@ export class CapabilityMarket {
                 const existing = this.host.bindings(current).find(b => b.pluginId === row.asset_key);
                 if (existing && existing.pluginVersion !== row.version) fail('CONFLICT', 'Uninstall the prior market version before installing another');
                 if (!existing) { current.plugins = [...current.plugins ?? [], { pluginId: row.asset_key, pluginVersion: row.version, config }]; delta.binding = true; }
-                const grants = row.data.grants as MarketGrants;
-                if (this.audience(owner, current, grants)) { delta.tools = grants.toolRefs.filter(t => !current.allowedTools.includes(t)); delta.services = grants.services.filter(s => !current.servicePermissions?.includes(s)); current.allowedTools = [...current.allowedTools, ...delta.tools]; current.servicePermissions = [...current.servicePermissions ?? [], ...delta.services]; }
+                const grants = release.data.grants as MarketGrants;
+                if (this.audience(freshOwner, current, grants)) { delta.tools = grants.toolRefs.filter(t => !current.allowedTools.includes(t)); delta.services = grants.services.filter(s => !current.servicePermissions?.includes(s)); current.allowedTools = [...current.allowedTools, ...delta.tools]; current.servicePermissions = [...current.servicePermissions ?? [], ...delta.services]; }
                 await this.host.validateAgent(current);
                 await client.query('UPDATE agents SET data=$2 WHERE id=$1', [agentId, JSON.stringify(current)]);
             }
@@ -178,7 +195,8 @@ export class CapabilityMarket {
         if (row.state !== 'published') fail('CONFLICT', 'Skill release was suspended');
         if (row.kind !== 'skill' || !(await this.host.db.pool.query('SELECT 1 FROM market_installations WHERE asset_id=$1 AND agent_id=$2 AND active=true', [id, agentId])).rowCount) fail('PERMISSION_DENIED', 'Skill is not installed on this job');
         const resource = await this.host.resources.read(actor.id, row.data.resourceRef.id, row.data.resourceRef.version, offset, 8000);
-        return { ...this.dto(row), markdown: resource.body, resourceRef: { id: resource.id, version: resource.version }, nextOffset: resource.nextOffset, digest: resource.digest };
+        const {body,...metadata}=resource;
+        return { ...this.dto(row), markdown: body, resource:metadata, resourceRef: { id: resource.id, version: resource.version }, nextOffset: resource.nextOffset, digest: resource.digest };
     }
     async granted(actor: Actor, agent: Agent, permission: string, toolRef?: string) {
         const owner = actor.id === agent.ownerId ? actor : await this.actor(agent.ownerId);
@@ -217,6 +235,8 @@ export class CapabilityMarket {
         app.post('/v1/market/submissions', { bodyLimit: 8000000, schema: { body: marketInputSchema } }, async (request, reply) => reply.code(201).send(await this.submit(await principal(request), request.body as MarketInput)));
         app.get('/v1/market/submissions', async request => this.submissions(await principal(request)));
         app.get<{ Params: { id: string } }>('/v1/market/submissions/:id', async request => this.get(await principal(request), request.params.id));
+        app.get<{Params:{id:string}}>('/v1/market/submissions/:id/file',async request=>{const q=request.query as any;return this.file(await principal(request),request.params.id,q.path,Number(q.offset??0));});
+        app.get<{Params:{id:string}}>('/v1/market/submissions/:id/history',async request=>this.history(await principal(request),request.params.id));
         app.post<{ Params: { id: string } }>('/v1/market/submissions/:id/review', { schema: { body: { ...changeSchema, required: [...changeSchema.required, 'decision'], properties: { ...changeSchema.properties, decision: { enum: ['approve', 'reject'] } } } } }, async request => this.review(await principal(request), request.params.id, request.body as any));
         app.post<{ Params: { id: string } }>('/v1/market/submissions/:id/publish', { schema: { body: publishSchema } }, async request => this.publish(await principal(request), request.params.id, request.body as any));
         app.get('/v1/market/releases', async request => this.releases(await principal(request), (request.query as any).query ?? ''));

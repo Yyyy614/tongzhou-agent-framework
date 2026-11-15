@@ -9,7 +9,7 @@ import{normalize}from'../connectors/im-bridge/transports.mjs';
 
 async function fixture(extra:any={}){
     await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/entries-'));let calls=0;const sent:string[]=[];
-    const host=await createFramework({root,entries:true,entryTransportFactory:async()=>({send:async(_reply:any,text:string)=>{sent.push(text);},close:async()=>{}}),...extra} as any),app=await createServer(host),queue=new TaskQueue(host,{async run(){calls++;return{id:randomUUID(),state:'succeeded',output:'confirmed generic result'};}});
+    const host=await createFramework({root,entries:true,entryTransportFactory:async()=>({send:async(_reply:any,text:string)=>{sent.push(text);},close:async()=>{}}),...extra} as any),app=await createServer(host),queue=new TaskQueue(host,{async run(){calls++;return{id:randomUUID(),state:'succeeded',output:'private process text',report:{facts:[{text:'confirmed generic result',refs:[]}],artifacts:[],issues:[]}};}});
     await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'admin',companyId:'one',role:'admin',permissions:[]});await host.putActor({id:'alice',companyId:'one',role:'employee',permissions:[]});await host.putActor({id:'outsider',companyId:'two',role:'admin',permissions:[]});
     await host.putAgent({id:'alice-agent',companyId:'one',ownerId:'alice',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});
     await queue.open();queue.registerRoutes(app);const headers:any={};for(const id of ['admin','alice','outsider'])headers[id]={authorization:'Bearer '+await host.issueAccessToken(id)};

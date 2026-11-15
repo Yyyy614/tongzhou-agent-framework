@@ -15,6 +15,10 @@ import { companyBundleDirectory, nativePresetRows } from './presets.js';
 import { pathToFileURL } from 'node:url';
 import { HarnessClients } from './harness-clients.js';
 import { contentHash } from './contracts.js';
+import { RuntimeContext } from './runtime-context.js';
+import { reportSchema, type StructuredReport } from './work-results.js';
+import type { ResourceRef } from './resources.js';
+import { assessCompanyEvent } from './event-assessor.js';
 export interface RuntimeOptions {
     publicOrigin?: string;
     apiKey: string;
@@ -23,6 +27,8 @@ export interface RuntimeOptions {
     maxConcurrentRuns?: number;
 }
 interface RunRequest {
+    contextResources?: ResourceRef[];
+    contextWorkId?: string;
     clientSessionId?: string;
     clientConnectionId?: string;
     expectedAgentRevision?: string;
@@ -52,6 +58,8 @@ interface RunTool {
     execute: (input: any, key: string) => Promise<unknown>;
 }
 interface Scope {
+    context?: RuntimeContext;
+    report?: StructuredReport;
     workStop?:Promise<void>;
     pendingOperations?: Set<Promise<unknown>>;
     admissionClosed?: boolean;
@@ -86,6 +94,7 @@ function childEnvironment(): NodeJS.ProcessEnv {
     return env;
 }
 export class HarnessRuntime {
+    assessEvent(input:import('./event-routing.js').EventAssessment){return assessCompanyEvent(this.host,this.options.model??'deepseek-flash',input);}
     private closed = false;
     readonly budget: ExecutionBudget;
     private scopes = new Map<string, Scope>();
@@ -141,10 +150,10 @@ export class HarnessRuntime {
                 await this.operation(scope, async () => {
                     const { actor, agent } = await this.host.authorize(scope.request.principalId, scope.request.agentId);
                     this.assertOpen(scope);
-                    const permission = ({ memory_read: 'memory.self.read', memory_search: 'memory.self.read', memory_write: 'memory.self.propose_write', report_record: 'report.self.write' } as Record<string, string>)[tool.name];
-                    if (permission && (!agent.servicePermissions?.includes(permission) || (actor.role !== 'admin' && !actor.permissions.includes(permission)) || !this.host.bindings(agent).some(b => this.host.registry.get(b.pluginId, b.pluginVersion).manifest.permissions.includes(permission))))
+                    const permission = ({ memory_read: 'memory.self.read', memory_search: 'memory.self.read', memory_write: 'memory.self.propose_write', report_record: 'report.self.write',work_report:'report.self.write' } as Record<string, string>)[tool.name];
+                    if (permission && (!agent.servicePermissions?.includes(permission) || !await this.host.hasPermission(actor,agent,permission) || !this.host.bindings(agent).some(b => this.host.registry.get(b.pluginId, b.pluginVersion).manifest.permissions.includes(permission))))
                         fail('PERMISSION_DENIED', 'Service grant was revoked');
-                    if(tool.companyRef){const plugin=this.host.pluginFor(agent,tool.companyRef);if(plugin.version!==tool.pluginVersion||!agent.allowedTools.includes(tool.companyRef)||(actor.role!=='admin'&&!actor.permissions.includes('tool.invoke:'+tool.companyRef)))fail('PERMISSION_DENIED','Tool binding changed before action or receipt access');}
+                    if(tool.companyRef){const plugin=this.host.pluginFor(agent,tool.companyRef);if(plugin.version!==tool.pluginVersion||!agent.allowedTools.includes(tool.companyRef)||!await this.host.hasPermission(actor,agent,'tool.invoke:'+tool.companyRef,tool.companyRef))fail('PERMISSION_DENIED','Tool binding changed before action or receipt access');await this.host.market.guardTool(actor,agent,tool.companyRef);}
                     if (!this.host.registry.ajv.validate(tool.inputSchema, rpc.params?.arguments ?? {}))
                         fail('INVALID_INPUT', 'MCP tool arguments failed schema validation');
                     try {
@@ -158,7 +167,12 @@ export class HarnessRuntime {
                                 version: number;
                             };
                             scope.contextRefs = [...(scope.contextRefs ?? []).filter(r => r.noteId !== note.noteId), { noteId: note.noteId, version: note.version }];
+                            scope.context?.note(output);
                         }
+                        if(tool.name==='resource_read'||tool.name==='resource_create')scope.context?.resource(output);
+                        if(tool.name==='skill_read'&&(output as any)?.resource)scope.context?.resource((output as any).resource);
+                        const written=tool.name==='memory_write'?output:tool.companyRef&&tool.effect==='host'?(output as any)?.output:null;
+                        if(written&&typeof (written as any).noteId==='string'&&Number.isInteger((written as any).version))await scope.context?.wroteMemory(written);
                         await this.host.db.audit(execution.reused?'runtime.tool_reused':'runtime.tool_succeeded', { principalId: scope.request.principalId, agentId: scope.request.agentId, runId: scope.id, toolName: tool.name, requestRef: String(rpc.id),actionId:execution.actionId, noteRef: tool.name === 'memory_read' ? { noteId: (output as any).noteId, version: (output as any).version } : undefined });
                         result = { content: [{ type: 'text', text: JSON.stringify(output) },...(execution.reused?[{type:'text',text:JSON.stringify({companyExecution:{reused:true,actionRef:execution.actionId}})}]:[])], isError: false };
                     }
@@ -172,6 +186,7 @@ export class HarnessRuntime {
                         result = { content: [{ type: 'text', text: JSON.stringify({ error: { code: e.code ?? 'TOOL_ERROR', message: e instanceof FrameworkError ? e.message : 'Tool failed' } }) }], isError: true };
                     }
                 });
+                scope.context?.receipt(tool.name,rpc.params?.arguments??{},result);
             }
             else
                 return reply.send({ jsonrpc: '2.0', id: rpc.id, error: { code: -32601, message: 'Method not supported' } });
@@ -198,6 +213,8 @@ export class HarnessRuntime {
     }
     private async proxyModel(scope: Scope, body: any) {
         this.assertOpen(scope);
+        if(!scope.context){const {actor,agent}=await this.host.authorize(scope.request.principalId,scope.request.agentId);scope.context=await RuntimeContext.create(this.host,actor,agent,scope.request.prompt,scope.request.contextResources,scope.request.contextWorkId??scope.request.workId);}
+        body=scope.context.request(body);
         const allowed = new Set(scope.tools.map(t => 'mcp__company__' + t.name));
         if (!body || body.model !== (this.options.model ?? 'deepseek-flash') || !Number.isInteger(body.max_tokens) || body.max_tokens < 1 || body.max_tokens > 1024 || JSON.stringify(body).length > 64000 || !Array.isArray(body.tools ?? []) || (body.tools ?? []).some((t: any) => !allowed.has(t.name)))
             fail('INVALID_INPUT', 'Model request exceeds managed policy');
@@ -217,13 +234,14 @@ export class HarnessRuntime {
             await this.host.authorize(scope.request.principalId, scope.request.agentId);
             this.assertOpen(scope);
             let response;
-            try { response = await this.host.channels.forward(scope.request.principalId, body, controller.signal, async () => { await this.host.authorize(scope.request.principalId, scope.request.agentId); await this.host.coordination?.control.guardRun(scope.id); this.assertOpen(scope); }); }
+            try { response = await this.host.channels.forward(scope.request.principalId, body, controller.signal, async () => { await this.host.authorize(scope.request.principalId, scope.request.agentId); await this.host.coordination?.control.guardRun(scope.id); await scope.context!.validate(); this.assertOpen(scope); }); }
             catch (error) { if ((error as any).code === 'RESULT_UNKNOWN') { dispatched = true; scope.reconcile = true; channel = (error as any).details ?? {}; } throw error; }
             dispatched = true; channel = { channelId: response.channelId, accountGroup: response.accountGroup, provider: response.provider, attempts: response.attempts };
             providerRequestId = response.providerRequestId; status = response.status;
             const { text, contentType } = response;
             if (status >= 500) scope.reconcile = true;
             usage = this.extractUsage(text, contentType);
+            if(status>=200&&status<300)scope.context.response(text,contentType);
             if (!Number.isInteger(usage?.input_tokens) || !Number.isInteger(usage?.output_tokens) || usage.input_tokens < 0 || usage.output_tokens < 0)
                 usage = null;
             return { status, text, contentType };
@@ -233,7 +251,7 @@ export class HarnessRuntime {
                 scope.modelAbort = undefined;
             try {
                 if (reserved) await this.budget.settle(budgetId, reservation, usage ? Number(usage.input_tokens) + Number(usage.output_tokens) : dispatched ? null : 0);
-                if (dispatched) await this.host.db.pool.query('INSERT INTO usage(id,run_id,data) VALUES($1,$2,$3)', [randomUUID(), scope.id, JSON.stringify({ ...scope.metadata, ...channel, principalId: scope.request.principalId, agentId: scope.request.agentId, provider: channel.provider ?? 'deepseek', providerRequestId, model: this.options.model ?? 'deepseek-flash', status, inputTokens: usage?.input_tokens ?? null, outputTokens: usage?.output_tokens ?? null, cacheReadTokens: usage?.cache_read_input_tokens ?? 0, measurement: usage ? 'provider' : 'unavailable', contextManifest: { noteRefs: scope.contextRefs ?? [], estimatedInputTokens: estimatedInput, requestChars: JSON.stringify(body).length, tools: [...allowed] }, durationMs: Date.now() - started })]);
+                if (dispatched) await this.host.db.pool.query('INSERT INTO usage(id,run_id,data) VALUES($1,$2,$3)', [randomUUID(), scope.id, JSON.stringify({ ...scope.metadata, ...channel, principalId: scope.request.principalId, agentId: scope.request.agentId, provider: channel.provider ?? 'deepseek', providerRequestId, model: this.options.model ?? 'deepseek-flash', status, inputTokens: usage?.input_tokens ?? null, outputTokens: usage?.output_tokens ?? null, cacheReadTokens: usage?.cache_read_input_tokens ?? 0, measurement: usage ? 'provider' : 'unavailable', contextManifest: { ...scope.context?.manifest(), estimatedInputTokens: estimatedInput, requestChars: JSON.stringify(body).length, tools: [...allowed] }, durationMs: Date.now() - started })]);
             } catch (error) {
                 if (dispatched) { scope.reconcile = true; throw new FrameworkError('RESULT_UNKNOWN', 'Model usage persistence needs reconciliation; the request was not replayed'); }
                 throw error;
@@ -289,13 +307,13 @@ export class HarnessRuntime {
         for (const plugin of plugins) {
             for (const tool of plugin.manifest.provides.tools) {
                 const ref = plugin.id + ':' + tool.id;
-                if (!agent.allowedTools.includes(ref) || (actor.role !== 'admin' && !actor.permissions.includes('tool.invoke:' + ref)))
+                if (!agent.allowedTools.includes(ref) || !await this.host.hasPermission(actor,agent,'tool.invoke:'+ref,ref))
                     continue;
                 tools.push({ name: 'tool_' + tool.id.replace(/[^A-Za-z0-9_]/gu, '_').slice(0, 26) + '_' + hash(ref).slice(0, 16),effect:tool.effect,companyRef:ref,pluginVersion:plugin.version, description: `Invoke ${ref} (${tool.effect})`, inputSchema: JSON.parse(await readFile(await this.host.registry.packagePath(plugin.directory, tool.inputSchema), 'utf8')), execute: (input, key) => this.host.invoke({ ...bound, runId, toolRef: ref, input, idempotencyKey: key }) });
             }
         }
-        const grant = (p: string) => plugins.some(plugin => plugin.manifest.permissions.includes(p)) && agent.servicePermissions?.includes(p) && (actor.role === 'admin' || actor.permissions.includes(p));
-        if (grant('memory.self.read')) {
+        const grant = async (p: string) => plugins.some(plugin => plugin.manifest.permissions.includes(p)) && agent.servicePermissions?.includes(p) && await this.host.hasPermission(actor,agent,p);
+        if (await grant('memory.self.read')) {
             tools.push({ name: 'memory_read', description: 'Read one private note. Follow links only as needed.', inputSchema: { type: 'object', additionalProperties: false, required: ['noteId'], properties: { noteId: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$' } } }, execute: async (input) => {
                     if (Object.keys(input).some(k => k !== 'noteId'))
                         fail('INVALID_INPUT', 'Unexpected memory parameter');
@@ -303,10 +321,17 @@ export class HarnessRuntime {
                 } });
             tools.push({ name: 'memory_search', description: 'Find note references and short excerpts in your own memory.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string', maxLength: 200 } } }, execute: input => this.host.memory.search({ ...bound, query: input.query }) });
         }
-        if (grant('memory.self.propose_write'))
+        if (await grant('memory.self.propose_write'))
             tools.push({ name: 'memory_write',effect:'host', description: 'Update your private notes using the version you read. Never grant permissions through notes.', inputSchema: { type: 'object', additionalProperties: false, required: ['noteId', 'markdown', 'expectedVersion', 'sourceRefs'], properties: { noteId: { type: 'string' }, markdown: { type: 'string', maxLength: 32000 }, expectedVersion: { type: 'integer', minimum: 0 }, sourceRefs: { type: 'array', items: { type: 'string' } } } }, execute: input => this.host.writeMemory({ ...input, ...bound }) });
-        if (grant('report.self.write'))
+        if (await grant('report.self.write')) {
             tools.push({ name: 'report_record',effect:'host', description: 'Record a concise work report for this agent.', inputSchema: { type: 'object', additionalProperties: false, required: ['summary'], properties: { summary: { type: 'string', maxLength: 8000 } } }, execute: input => this.host.recordReport({ ...bound, runId, summary: input.summary }) });
+            tools.push({name:'work_report',effect:'host',description:'Record necessary reported facts with versioned evidence, deliverable references and unresolved issues. This never changes host completion or approval state. Uncited claims remain private to you.',inputSchema:reportSchema,execute:async input=>{const scope=this.scopes.get(runId);if(!scope)fail('UNAUTHENTICATED','No active report scope');for(const ref of [...input.artifacts,...input.facts.flatMap((f:any)=>f.refs),...input.issues.flatMap((i:any)=>typeof i==='string'?[]:i.refs)])await this.host.resources.read(actor.id,ref.id,ref.version);scope.report=input;return{recorded:true,facts:input.facts.length,artifacts:input.artifacts.length};}});
+        }
+        tools.push({name:'resource_index',effect:'read',description:'Search only your authorized company resource metadata. Process outputs are excluded unless explicitly requested. Read bodies separately.',inputSchema:{type:'object',additionalProperties:false,properties:{query:{type:'string',maxLength:240},domain:{type:'string',maxLength:80}}},execute:input=>this.host.resources.index(actor.id,input.query??'',input.domain)});
+        tools.push({name:'resource_read',effect:'read',description:'Expand one versioned resource using current access rights. Paginated; never grants permissions.',inputSchema:{type:'object',additionalProperties:false,required:['id','version'],properties:{id:{type:'string',format:'uuid'},version:{type:'integer',minimum:1},offset:{type:'integer',minimum:0}}},execute:input=>this.host.resources.read(actor.id,input.id,input.version,input.offset??0,8000)});
+        tools.push({name:'resource_create',effect:'host',description:'Save a private deliverable or source. Sharing requires an explicit employee publication action in the workspace.',inputSchema:{type:'object',additionalProperties:false,required:['title','body','domain'],properties:{title:{type:'string',minLength:1,maxLength:160},body:{type:'string',maxLength:16000},domain:{type:'string',minLength:1,maxLength:80}}},execute:(input,key)=>this.host.resources.create(actor.id,{...input,kind:'artifact',access:{scope:'personal',readerIds:[]},sourceRefs:['run:'+runId],idempotencyKey:key})});
+        tools.push({name:'skill_index',effect:'read',description:'List installed company-reviewed Skills for this job. Read only the relevant Skill before use.',inputSchema:{type:'object',additionalProperties:false,properties:{}},execute:()=>this.host.market.installed(actor.id,agent.id)});
+        tools.push({name:'skill_read',effect:'read',description:'Read one installed and currently published Skill. Instructions do not grant tool or data permissions.',inputSchema:{type:'object',additionalProperties:false,required:['id'],properties:{id:{type:'string',format:'uuid'},offset:{type:'integer',minimum:0}}},execute:input=>this.host.market.skill(actor.id,agent.id,input.id,input.offset??0)});
         const parentTaskId = this.scopes.get(runId)?.request.taskId;
         const workRequest=this.scopes.get(runId)?.request;
         if(workRequest?.workId&&parentTaskId&&this.host.coordination){
@@ -340,7 +365,7 @@ export class HarnessRuntime {
                     const task = await queue.get(input.taskId, actor.id);
                     if (task.parentTaskId !== parentTaskId)
                         fail('PERMISSION_DENIED', 'Task is not a direct child');
-                    return { id: task.id, agentId: task.agentId, state: task.state, summary: task.output?.slice(0, 2000), runId: task.runId, error: task.error };
+                    return { id: task.id, agentId: task.agentId, state: task.state, summary: task.result?.summary??task.output?.slice(0, 2000), result:task.result,runId: task.runId, error: task.error };
                 } });
         }
         return tools;
@@ -385,8 +410,11 @@ export class HarnessRuntime {
             await this.drainOperations(scope);
             const state = scope.reconcile || errorCode === 'RESULT_UNKNOWN' ? 'reconciliation_required' : scope.cancelled ? 'cancelled' : scope.approvalRequired ? 'waiting_approval' : errorCode ? 'failed' : 'succeeded';
             await this.host.db.pool.query("UPDATE runs SET state=$2,data=data||$3::jsonb,updated_at=now() WHERE id=$1 AND state='running'", [id, state, JSON.stringify({ output: output.slice(0, 16000), source: 'harness-client', contextRefs: scope.contextRefs, ...(errorCode ? { error: { code: errorCode } } : {}) })]);
-            if (scope.request.taskId)
+            if (scope.request.taskId) {
+                const task=(await this.host.db.pool.query('SELECT * FROM tasks WHERE id=$1',[scope.request.taskId])).rows[0];
+                if(task)await this.host.results.capture(task,{id,state,output:output.slice(0,16000),...(scope.report?{report:scope.report}:{})});
                 await this.host.db.pool.query("UPDATE tasks SET state=$2,data=data||$3::jsonb,updated_at=now() WHERE id=$1 AND state='running'", [scope.request.taskId, state, JSON.stringify({ output: output.slice(0, 16000), runId: id, ...(errorCode ? { error: { code: errorCode } } : {}) })]);
+            }
             await this.host.db.audit('run.' + state, { principalId: scope.request.principalId, agentId: scope.request.agentId, runId: id, source: 'harness-client', code: errorCode });
             this.scopes.delete(id);
         })();
@@ -542,7 +570,7 @@ export class HarnessRuntime {
                 fail('APPROVAL_REQUIRED', 'A write operation is waiting for administrator approval');
             if (result.finishReason === 'error' || result.finishReason === 'aborted' || !result.finalResponse)
                 fail('RUNTIME_FAILED', 'Harness did not produce a successful final response');
-            const settled=await this.host.db.pool.query("UPDATE runs SET state='succeeded',data=data||$2::jsonb,updated_at=now() WHERE id=$1 AND state='running'", [id, JSON.stringify({ output: result.finalResponse.slice(0, 16000), sessionId: result.sessionId, finishReason: result.finishReason, eventCount: result.events.length, contextRefs })]);
+            const settled=await this.host.db.pool.query("UPDATE runs SET state='succeeded',data=data||$2::jsonb,updated_at=now() WHERE id=$1 AND state='running'", [id, JSON.stringify({ output: result.finalResponse.slice(0, 16000), ...(scope.report?{report:scope.report}:{}), sessionId: result.sessionId, finishReason: result.finishReason, eventCount: result.events.length, contextRefs })]);
             await this.host.db.audit(settled.rowCount?'run.succeeded':'run.late_result', { principalId: actor.id, agentId: agent.id, runId: id, sessionId: result.sessionId, finishReason: result.finishReason, eventCount: result.events.length });
         }
         catch (error) {
@@ -583,7 +611,9 @@ export class HarnessRuntime {
         if (!row)
             fail('NOT_FOUND', 'Run does not exist');
         await this.host.authorize(principalId, row.agent_id, 'read');
-        return { id: row.id, agentId: row.agent_id, principalId: row.principal_id, state: row.state, ...row.data, createdAt: row.created_at, updatedAt: row.updated_at };
+        const result=row.data.taskId?await this.host.results.view(principalId,row.data.taskId):null;
+        const data={...row.data};if(result&&!result.processAvailable){delete data.output;delete data.report;}
+        return { id: row.id, agentId: row.agent_id, principalId: row.principal_id, state: row.state, ...data, ...(result?{result}:{}),createdAt: row.created_at, updatedAt: row.updated_at };
     }
     async cancel(id: string, principalId: string) {
         const run = await this.get(id, principalId);

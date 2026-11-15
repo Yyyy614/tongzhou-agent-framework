@@ -44,5 +44,9 @@ test('resource indexes and ContextPacks enforce current ACL, immutable versions 
         expect(revoked.statusCode).toBe(200);
         expect((await api('bob', '/v1/resources/' + resource.id)).statusCode).toBe(404);
         expect((await api('bob', '/v1/resources?query=updated')).json().items).toEqual([]);
+        const restored = await api('alice', '/v1/resources/' + resource.id + '/access', 'PUT', { revision: revoked.json().revision, access: { scope: 'personal', readerIds: ['bob'] } });
+        expect(restored.statusCode).toBe(200);
+        expect((await api('alice', '/v1/context-packs/' + second.json().id)).statusCode).toBe(409);
+        expect((await api('alice', '/v1/resources/' + resource.id + '?version=invalid')).statusCode).toBe(400);
     } finally { await app?.close(); await host.close(); }
 });

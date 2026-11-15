@@ -115,7 +115,8 @@ async function run() {
     ipcMain.handle('dsh-desktop:boot-failed',event=>{trusted(event);return showAccount('工作区加载失败，请重新进入岗位');});
     ipcMain.handle('company:call',async(event,method,input)=>{
         trusted(event);
-        if(typeof method!=='string'||JSON.stringify(input??{}).length>20000)throw Error('Invalid company operation');
+        const limit=method==='action'&&input?.kind==='market-submit'?8000000:method==='action'&&input?.kind==='resource-create'?600000:20000;
+        if(typeof method!=='string'||JSON.stringify(input??{}).length>limit)throw Error('Invalid company operation');
         try {
             let result;
             if(method==='state')result=await company.state();
@@ -125,7 +126,7 @@ async function run() {
             else if(method==='account'){await showAccount();result={opened:true};}
             else if(method==='workspace'){await workspace();result={opened:true};}
             else if(method==='work-center')result=await company.workCenter();
-            else if(method==='action')result=await company.action(input.kind,input.id,input.data);
+            else if(method==='action'){result=await company.action(input.kind,input.id,input.data);if(['market-install','market-uninstall'].includes(input.kind))await workspace();}
             else if(method==='logout'){result=await company.logout();await showAccount();}
             else throw Error('Unsupported company operation');
             return{ok:true,result};

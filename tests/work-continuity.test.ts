@@ -37,7 +37,8 @@ test('HTTP and Bot continue the same work in new rounds while confirmed tasks an
         expect(response.statusCode).toBe(202);expect(response.json()).toMatchObject({workId:f.id,round:2,controlRevision:1,status:'accepted'});
         await expect.poll(async()=>(await f.read()).state,{timeout:10000}).toBe('waiting_review');
         const second=await f.read();expect(second.currentRound).toBe(2);expect(second.assignments[0].taskId).not.toBe(first.assignments[0].taskId);
-        expect((await f.queue.get(first.assignments[0].taskId,'lead')).output).toBe('Confirmed first confirmed action');
+        expect((await f.queue.get(first.assignments[0].taskId,'alice')).output).toBe('Confirmed first confirmed action');
+        expect((await f.queue.get(first.assignments[0].taskId,'lead')).output).toBeUndefined();
         expect((await f.app.inject({method:'POST',url:'/v1/work/'+f.id+'/review',headers:f.headers,payload:{revision:second.revision,decision:'approve',reason:'Correction accepted'}})).statusCode).toBe(200);
         const message={agentId:'alice-agent',conversationId:'another-entry',messageId:'followup',text:'prepare one additional summary',workId:f.id,revision:(await f.read()).revision};
         const bot=await f.app.inject({method:'POST',url:'/v1/bot/messages',headers:f.headers,payload:message});expect(bot.statusCode).toBe(202);expect(bot.json().workId).toBe(f.id);
@@ -65,7 +66,7 @@ test('work input is atomic and idempotent across concurrent delivery and two hos
         await queue.close();await app.close();await host.close();
         host=await createFramework({root:f.root});app=await createServer(host);queue=new TaskQueue(host,{async run(){calls++;return{id:randomUUID(),state:'succeeded',output:'Only the new authorized action'};}});await queue.open();queue.registerRoutes(app);await queue.startWorker();
         await expect.poll(async()=>(await app.inject({url:'/v1/work/'+f.id,headers:f.headers})).json().state,{timeout:10000}).toBe('waiting_review');
-        expect(calls).toBe(1);expect((await queue.get(first.assignments[0].taskId,'lead')).output).toBe('Confirmed first confirmed action');
+        expect(calls).toBe(1);expect((await queue.get(first.assignments[0].taskId,'alice')).output).toBe('Confirmed first confirmed action');
         expect((await app.inject({method:'POST',url:'/v1/work/'+f.id+'/inputs',headers:f.headers,payload:input})).statusCode).toBe(202);
         expect((await app.inject({url:'/v1/work/'+f.id+'/history',headers:f.headers})).json().rounds).toHaveLength(2);
     }finally{await queue.close();await app.close();await host.close();}
@@ -94,7 +95,9 @@ test('a continuation checkpoint contains only the executing employee previous re
     try{
         const first=await f.read();const receipt=await f.host.coordination!.continuity.append('lead',f.id,{revision:first.revision,idempotencyKey:'checkpoint',assignments:[{agentId:'alice-agent',prompt:'explicit new action'}]},{kind:'http'});
         const checkpoint=await f.host.coordination!.continuity.checkpointForTask('alice',receipt.taskIds[0]!);
-        expect(checkpoint.confirmedTask).toMatchObject({taskId:first.assignments[0].taskId,state:'succeeded',summary:'Confirmed first confirmed action'});
+        expect(checkpoint.confirmedTask).toMatchObject({taskId:first.assignments[0].taskId,state:'succeeded',summary:'执行已结束，等待人工核对',result:{processAvailable:true}});
+        const reference=checkpoint.confirmedTask.result.processRef;
+        expect((await f.host.resources.read('alice',reference.id,reference.version)).body).toBe('Confirmed first confirmed action');
         await expect(f.host.coordination!.continuity.checkpointForTask('lead',receipt.taskIds[0]!)).rejects.toMatchObject({code:'PERMISSION_DENIED'});
         await f.host.putActor({id:'alice',companyId:'one',role:'employee',managerId:null,active:false,permissions:[]});
         await expect(f.host.coordination!.continuity.checkpointForTask('alice',receipt.taskIds[0]!)).rejects.toMatchObject({code:'PERMISSION_DENIED'});
@@ -156,7 +159,9 @@ test('a partial participant gets only their bounded checkpoint even when other p
         await expect.poll(async()=>(await f.host.coordination!.get('lead',work.id)).state,{timeout:10000}).toBe('waiting_review');
         const receipt=await f.host.coordination!.continuity.append('lead',work.id,{revision:(await f.host.coordination!.get('lead',work.id)).revision,idempotencyKey:'only-alice',assignments:[{agentId:'alice-agent',prompt:'use only own previous result'}]},{kind:'http'});
         const checkpoint=await f.host.coordination!.continuity.checkpointForTask('alice',receipt.taskIds[0]!);
-        expect(checkpoint.confirmedTask.summary).toHaveLength(2000);expect(checkpoint.summaryTruncated).toBe(true);expect(JSON.stringify(checkpoint)).not.toMatch(/bob|BOB_RESULT/u);
+        expect(checkpoint.confirmedTask.summary).toBe('执行已结束，等待人工核对');expect(checkpoint.summaryTruncated).toBe(false);expect(JSON.stringify(checkpoint)).not.toMatch(/bob|BOB_RESULT/u);
+        expect(JSON.stringify(checkpoint)).not.toContain('A'.repeat(500));
+        const source=checkpoint.confirmedTask.result.processRef;expect((await f.host.resources.read('alice',source.id,source.version)).body).toBe('Confirmed '+'A'.repeat(3000));
         await expect(f.host.coordination!.continuity.history('alice',work.id)).rejects.toMatchObject({code:'PERMISSION_DENIED'});
         await expect(f.host.coordination!.continuity.input('alice',work.id,receipt.inputId)).rejects.toMatchObject({code:'PERMISSION_DENIED'});
         await expect(f.host.coordination!.continuity.checkpointForTask('bob',receipt.taskIds[0]!)).rejects.toMatchObject({code:'PERMISSION_DENIED'});

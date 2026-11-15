@@ -1,5 +1,5 @@
 import { build } from '../.tools/company-build-tools/node_modules/esbuild/lib/main.js';
-import { mkdir, readFile, writeFile, cp, lstat, symlink } from 'node:fs/promises';
+import { mkdir, readFile, writeFile, cp, lstat, symlink, realpath } from 'node:fs/promises';
 import { createReadStream } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve, relative, join } from 'node:path';
@@ -12,10 +12,11 @@ for(const[file,expected]of Object.entries(lock.modules)){const hash=createHash('
 const official=JSON.parse(await readFile(resolve(root,'harness-desktop.lock.json'),'utf8'));
 const digest=createHash('sha256');for await(const chunk of createReadStream(resolve(root,'.tools/harness-desktop/resources/app.asar')))digest.update(chunk);
 if(digest.digest('hex')!==official.asarSHA256)throw Error('Pinned runtime artifact differs');
-const base=(await prepareCompanyRuntime()).directory;
+const base=await realpath((await prepareCompanyRuntime()).directory);
 const studio=process.argv.includes('--profile=studio');
-const destination=resolve(root,studio?'.local/ui-integrated/app':'.local/v04-app');await mkdir(join(destination,'lib'),{recursive:true});
-const version=studio?'0.5.1':'0.4.0';
+const next=process.argv.includes('--channel=v06');if(next&&!studio)throw Error('The v06 isolated channel requires the studio profile');
+const destination=resolve(root,next?'.local/v06/app':studio?'.local/ui-integrated/app':'.local/v04-app');await mkdir(join(destination,'lib'),{recursive:true});
+const version=next?'0.6.0':studio?'0.5.1':'0.4.0';
 const requireRuntime=createRequire(join(base,'dsh/package.json'));
 const externalRuntime={name:'pinned-host-runtime',setup(plugin){plugin.onResolve({filter:/^(?:@deepseek-ai\/|zod$|semver$|yaml$)/},args=>{const path=requireRuntime.resolve(args.path);return{path:'../dsh/'+relative(join(base,'dsh'),path).replaceAll('\\','/'),external:true};});}};
 await build({entryPoints:[resolve(root,'desktop/company-main.mjs')],outfile:join(destination,'lib/company-main.mjs'),bundle:true,format:'esm',platform:'node',target:'node24',external:['electron'],plugins:[externalRuntime],logLevel:'warning'});
@@ -35,6 +36,6 @@ await writeFile(join(workspace,'lib/client.js'),'window.__ModuleLoader__.load({i
 const link=join(destination,'dsh'),existing=await lstat(link).catch(error=>{if(error.code!=='ENOENT')throw error;return null;});
 if(!existing)await symlink(join(base,'dsh'),link,'junction');
 await writeFile(join(destination,'package.json'),JSON.stringify({name:'@company-agent/harness-desktop',productName:studio?productName:'公司 Agent Harness',version,type:'module',main:'lib/company-main.mjs',private:true},null,2));
-await writeFile(join(destination,'company.json'),JSON.stringify({version,...(studio?{productName,integratedChrome:true}:{}),serverURL:studio?'http://127.0.0.1:4917':'http://127.0.0.1:4417',dataDir:resolve(root,studio?'.local/ui-integrated/device':'.local/v04-native-device'),resourcesRoot:resolve(root,'.tools/harness-desktop/resources')},null,2));
-await writeFile(resolve(root,studio?'.local/ui-integrated/build.json':'.local/v04-app-build.json'),JSON.stringify({builtAt:new Date().toISOString(),directory:destination,version,upstreamCommit:lock.upstreamCommit,electronVersion:lock.electronVersion,mode:'isolated-development',usesExternalLauncher:false},null,2));
+await writeFile(join(destination,'company.json'),JSON.stringify({version,...(studio?{productName,integratedChrome:true}:{}),serverURL:next?'http://127.0.0.1:55061':studio?'http://127.0.0.1:4917':'http://127.0.0.1:4417',dataDir:resolve(root,next?'.local/v06/device':studio?'.local/ui-integrated/device':'.local/v04-native-device'),dataNamespace:next?'v06-isolated':'default',resourcesRoot:resolve(root,'.tools/harness-desktop/resources')},null,2));
+await writeFile(resolve(root,next?'.local/v06/build.json':studio?'.local/ui-integrated/build.json':'.local/v04-app-build.json'),JSON.stringify({builtAt:new Date().toISOString(),directory:destination,version,upstreamCommit:lock.upstreamCommit,electronVersion:lock.electronVersion,mode:'isolated-development',usesExternalLauncher:false},null,2));
 console.log(JSON.stringify({built:true,directory:destination,version,usesExternalLauncher:false}));

@@ -24,7 +24,8 @@ export function decodePackage(files: PackageFile[]) {
         if (/sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9_]{20,}|github_pat_[A-Za-z0-9_]{30,}|fw_(?:device|entry|client)_[A-Za-z0-9_-]{20,}|-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/u.test(text)) fail('INVALID_INPUT', 'Package contains possible credentials; use managed connection references');
         seen.add(path.toLowerCase()); decoded.set(path, content);
     }
-    return { files: [...decoded.entries()].sort(([a], [b]) => a.localeCompare(b)), bytes, digest: contentHash([...decoded.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([path, bytes]) => ({ path, digest: contentHash(bytes.toString('base64')) }))) };
+    const ordered=[...decoded.entries()].sort(([a],[b])=>a<b?-1:a>b?1:0);
+    return { files: ordered, bytes, digest: contentHash(ordered.map(([path, bytes]) => ({ path, digest: contentHash(bytes.toString('base64')) }))) };
 }
 export async function stagePackage(directory: string, files: Array<[string, Buffer]>) {
     await mkdir(directory, { recursive: false, mode: 0o700 });

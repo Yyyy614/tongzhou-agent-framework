@@ -105,7 +105,8 @@ export class TaskQueue {
             const agent = await this.host.db.get<import('./types.js').Agent>('agents', row.agent_id);
             if (!actor.active || actor.companyId !== agent.companyId) fail('PERMISSION_DENIED', 'Task receipt belongs to another company or inactive account');
         } else await this.host.authorize(principalId, row.agent_id, 'read');
-        return { id: row.id, agentId: row.agent_id, principalId: row.principal_id, initiatingPrincipalId: row.principal_id, executionPrincipalId: row.data.executionPrincipalId, workId: row.data.workId,workRound:row.data.workRound,workInputId:row.data.workInputId, state: row.state, parentTaskId: row.parent_id, runId: row.data.runId, output: row.data.output, error: row.data.error, createdAt: row.created_at, updatedAt: row.updated_at };
+        const result = await this.host.results.view(principalId, id);
+        return { id: row.id, agentId: row.agent_id, principalId: row.principal_id, initiatingPrincipalId: row.principal_id, executionPrincipalId: row.data.executionPrincipalId, workId: row.data.workId,workRound:row.data.workRound,workInputId:row.data.workInputId, state: row.state, parentTaskId: row.parent_id, runId: row.data.runId, output: !result || result.processAvailable ? row.data.output : undefined, result, error: row.data.error, createdAt: row.created_at, updatedAt: row.updated_at };
     }
     private async executeAdmitted(request: TaskRequest) {
         const deadline = Date.now() + 30000;
@@ -129,7 +130,12 @@ export class TaskQueue {
             }
         }
     }
-    async summaries(agentId: string, principalId: string) { await this.host.authorize(principalId, agentId, 'read'); return (await this.host.db.pool.query('SELECT id,state,left(data->>\'output\',2000) AS summary,data->>\'runId\' AS "runId",data->\'error\' AS error,updated_at FROM tasks WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 30', [agentId])).rows; }
+    async summaries(agentId: string, principalId: string) {
+        await this.host.organization.authorizeAgent(principalId, agentId, 'read');
+        const rows = (await this.host.db.pool.query('SELECT id,state,left(data->>\'output\',2000) AS summary,data->>\'runId\' AS "runId",data->\'error\' AS error,updated_at FROM tasks WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 30', [agentId])).rows;
+        for (const row of rows) { const result = await this.host.results.view(principalId, row.id); if (result) { row.summary = result.summary; row.result = result; } }
+        return rows;
+    }
     registerRoutes(app: import('fastify').FastifyInstance) {
         app.get<{ Params: { id: string } }>('/v1/tasks/:id/result', async request => { const actor = await authenticateRequest(this.host, request); return this.host.results.view(actor.id, request.params.id); });
         const principal = async (request: any) => (await authenticateRequest(this.host, request)).id;

@@ -115,8 +115,7 @@ export async function createCompanySession({ serverURL, dataDir, protection, run
             return publicState();
         });
     }
-    async function selectAgent(agentId, options = {}) {
-        return exclusive(async () => {
+    async function connectAgent(agentId, options = {}) {
             const boot = await bootstrap();
             if (!boot) throw failure('UNAUTHENTICATED', '请先登录公司账号');
             const agent = boot.agents.find(item => item.id === agentId);
@@ -140,8 +139,8 @@ export async function createCompanySession({ serverURL, dataDir, protection, run
             }
             catch (error) { await retire(); throw error; }
             return publicState();
-        });
     }
+    const selectAgent=(agentId,options={})=>exclusive(()=>connectAgent(agentId,options));
     async function logout() {
         return exclusive(async () => {
             await retire();
@@ -172,7 +171,7 @@ export async function createCompanySession({ serverURL, dataDir, protection, run
             return exclusive(async () => {
                 const state = await publicState();
                 if (!state.authenticated) throw failure('UNAUTHENTICATED', '请先登录公司账号');
-                const entries = [['work','/v1/work'],['inbox','/v1/assistant/inbox'],['reminders','/v1/assistant/reminders'],['connections','/v1/connections']];
+                const entries = [['work','/v1/work'],['inbox','/v1/assistant/inbox'],['reminders','/v1/assistant/reminders'],['connections','/v1/connections'],['events','/v1/events']];
                 const results = await Promise.allSettled(entries.map(([,path])=>request(path)));
                 return { ...state, ...Object.fromEntries(results.map((result,index)=>[entries[index][0],result.status==='fulfilled'?{available:true,data:result.value}:{available:false,message:result.reason.message}])) };
             });
@@ -181,6 +180,24 @@ export async function createCompanySession({ serverURL, dataDir, protection, run
             return exclusive(async () => {
                 if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/u.test(id)) throw failure('INVALID_INPUT', '记录编号无效');
                 if (kind === 'read-task') return request('/v1/tasks/' + id);
+                if(kind==='market-list')return request('/v1/market/releases?query='+encodeURIComponent(input?.query??''));
+                if(kind==='market-submissions')return request('/v1/market/submissions');
+                if(kind==='market-submit')return request('/v1/market/submissions','POST',input,token,60000);
+                if(kind==='resource-index')return request('/v1/resources?query='+encodeURIComponent(input?.query??'')+(input?.domain?'&domain='+encodeURIComponent(input.domain):''));
+                if(kind==='resource-read')return request('/v1/resources/'+id+'?offset='+Number(input?.offset??0)+(input?.version?'&version='+Number(input.version):''));
+                if(kind==='resource-create')return request('/v1/resources','POST',input);
+                if(kind==='resource-access')return request('/v1/resources/'+id+'/access','PUT',input);
+                if(kind==='task-result')return request('/v1/tasks/'+id+'/result');
+                if(['market-installed','market-install','market-uninstall','skill-read','context-select'].includes(kind)){
+                    if(!active?.started||active.released)throw failure('JOB_REQUIRED','请先进入自己的工作岗位');
+                    const agentId=active.lease.agentId;
+                    if(kind==='market-installed')return request('/v1/agents/'+agentId+'/market');
+                    if(kind==='skill-read')return request('/v1/agents/'+agentId+'/skills/'+id);
+                    if(kind==='context-select')return request('/v1/harness/clients/'+active.lease.id+'/context','PUT',input);
+                    const result=await request('/v1/market/releases/'+id+(kind==='market-install'?'/install':'/uninstall'),'POST',{agentId,...(kind==='market-install'?{config:input?.config??{}}:{})});
+                    // Keep the same per-job native home; replace the lease and descriptors after a mount change.
+                    await connectAgent(agentId,{refresh:true});return result;
+                }
                 if (kind === 'review-work') return request('/v1/work/' + id + '/review','POST',input);
                 if (kind === 'read-notice') return request('/v1/assistant/inbox/' + id + '/read','POST',{});
                 if (['memory-list','memory-read','job-details','job-usage'].includes(kind)) {

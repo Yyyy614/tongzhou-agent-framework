@@ -58,7 +58,8 @@ test('a real Harness coordinator delegates through MCP to a separately owned rem
         expect(executedBy).toBe('alice');
         expect(modelCalls).toBe(2);
         const child = (await queue.summaries('child', 'coordinator'))[0];
-        expect(child.summary).toBe('Child summary only');
+        expect(child.summary).toBe('执行已结束，等待人工核对');
+        expect(JSON.stringify(child)).not.toContain('Child summary only');
         const usage = await runtime.usage({ principalId: 'alice', agentId: 'child' });
         expect(usage.records[0].initiatingPrincipalId).toBe('coordinator');
         expect((await host.listLogs({ principalId: 'coordinator', agentId: 'coord' })).some(l => l.type === 'runtime.tool_succeeded' && l.data.toolName === 'task_delegate')).toBe(true);

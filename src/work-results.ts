@@ -35,7 +35,8 @@ export class WorkResults {
         requireUuid(taskId);
         const task = (await this.host.db.pool.query('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
         if (!task) fail('NOT_FOUND', 'Task result is unavailable');
-        await this.host.organization.authorizeAgent(principalId, task.agent_id, 'read');
+        if(task.principal_id===principalId&&!task.data.workId){const actor=await this.host.db.get<import('./types.js').Actor>('actors',principalId),agent=await this.host.db.get<import('./types.js').Agent>('agents',task.agent_id);if(!actor.active||actor.companyId!==agent.companyId)fail('PERMISSION_DENIED','Task receipt belongs to another company or inactive account');}
+        else await this.host.organization.authorizeAgent(principalId, task.agent_id, 'read');
         const row = (await this.host.db.pool.query('SELECT * FROM task_results WHERE task_id=$1', [taskId])).rows[0];
         if (!row) return null;
         const own = row.owner_id === principalId, facts: any[] = [], artifacts: any[] = [], issues: string[] = [];

@@ -4,6 +4,7 @@ import type { HarnessRuntime } from './runtime.js';
 import { authenticateRequest, consoleCookie } from './console-auth.js';
 import { contentHash } from './contracts.js';
 import { fail } from './errors.js';
+import { currentNativeInput } from './runtime-context.js';
 interface Generation {
     sessionId: string;
     turnId: string;
@@ -12,6 +13,7 @@ interface Generation {
     createdAt: number;
 }
 interface ClientLease {
+    context?: import('./resources.js').ContextPackInput;
     id: string;
     token: string;
     principalId: string;
@@ -78,6 +80,14 @@ export class HarnessClients {
             };
         }>('/v1/harness/clients/:id', async (request) => { const lease = await this.owner(request); this.leases.delete(lease.id); if (lease.generation)
             await this.stop(lease, lease.generation, 'CLIENT_CLOSED'); return { closed: true }; });
+        app.put<{Params:{id:string}}>('/v1/harness/clients/:id/context',async request=>{
+            const lease=await this.owner(request);
+            if(lease.busy||lease.turn||lease.generation&&!lease.generation.finished)fail('CONFLICT','Finish the current turn before changing context');
+            const input=request.body as import('./resources.js').ContextPackInput;
+            const pack=await host.resources.context(lease.principalId,lease.agentId,input);
+            lease.context=structuredClone(input);
+            return {workId:pack.workId,sources:pack.sources,usedChars:pack.usedChars,maxChars:pack.maxChars,historyPolicy:'host-owned-turn'};
+        });
         const lifecycle = { body: { type: 'object', additionalProperties: false, required: ['sessionId', 'turnId'], properties: { sessionId: { type: 'string', minLength: 1, maxLength: 160 }, turnId: { type: 'string', minLength: 1, maxLength: 160 }, reason: { type: 'string', maxLength: 40 } } } };
         app.post<{
             Params: {
@@ -163,9 +173,9 @@ export class HarnessClients {
                 if (!body || typeof body !== 'object' || !Array.isArray(body.messages) || body.tools !== undefined && (!Array.isArray(body.tools) || body.tools.length > 256 || body.tools.some((t: any) => !t || typeof t.name !== 'string')))
                     fail('INVALID_INPUT', 'Invalid native model request');
                 if (!lease.turn) {
-                    const inputHash = createHash('sha256').update(JSON.stringify(body.messages)).digest('hex');
+                    const input = currentNativeInput(body.messages);
                     const turnKey = createHash('sha256').update(JSON.stringify([g.sessionId, g.turnId])).digest('hex');
-                    const admitted = await runtime.openClientTurn({ principalId: lease.principalId, agentId: lease.agentId, prompt: 'Native Harness input SHA256: ' + inputHash, idempotencyKey: 'native:' + turnKey, clientSessionId: g.sessionId, clientConnectionId: lease.id, expectedAgentRevision: lease.agentRevision, initialContextRefs: lease.contextRefs });
+                    const admitted = await runtime.openClientTurn({ principalId: lease.principalId, agentId: lease.agentId, prompt: input, idempotencyKey: 'native:' + turnKey, clientSessionId: g.sessionId, clientConnectionId: lease.id, expectedAgentRevision: lease.agentRevision, initialContextRefs: lease.contextRefs,contextResources:lease.context?.resources,contextWorkId:lease.context?.workId });
                     lease.turn = { ...admitted, expiresAt: Date.now() + 180000 };
                     lease.lastRunId = admitted.id;
                     if (g.cancelled || lease.generation !== g) {
