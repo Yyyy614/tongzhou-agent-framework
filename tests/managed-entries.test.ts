@@ -30,7 +30,11 @@ for(const provider of ['dingtalk','feishu','wecom'] as const)test('company-manag
         expect((await host.coordination!.get('admin',workId)).currentRound).toBe(2);expect(executions).toBe(2);
         expect((await host.db.pool.query('SELECT * FROM entry_bindings')).rowCount).toBe(0);
         expect((await receive({...message('3'),externalUserId:'unknown'})).accepted).toBe(false);
-        await app.inject({url:'/v1/admin/event-sources/'+source.id,method:'PUT',headers,payload:{...config,enabled:false,revision:source.revision}});
+        await host.events.close();
+        const pending=await receive({...message('pending-revocation'),conversationId:'another-thread'});
+        const removed=await app.inject({url:'/v1/admin/event-sources/'+source.id,method:'PUT',headers,payload:{...config,mappings:[],revision:source.revision}});expect(removed.statusCode).toBe(200);
+        await host.events.runOnce();expect((await host.events.get('admin',pending.id)).state).toBe('blocked');expect(executions).toBe(2);
+        await app.inject({url:'/v1/admin/event-sources/'+source.id,method:'PUT',headers,payload:{...config,enabled:false,revision:removed.json().revision}});
         expect((await receive(message('4'))).accepted).toBe(false);
     }finally{await queue.close();await app.close();await host.close();}
 },30000);

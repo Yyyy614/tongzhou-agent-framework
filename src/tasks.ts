@@ -53,7 +53,7 @@ export class TaskQueue {
             if (count >= 2) fail('BUDGET_EXCEEDED', 'Parent already has two child tasks');
         }
         const id = randomUUID();
-        const data = { prompt: request.prompt, idempotencyKey: 'task:' + id, executionPrincipalId: agent.ownerId, ...(request.workId ? { workId: request.workId, budgetGroupId: request.budgetGroupId ?? request.workId,workRound:request.workRound,workInputId:request.workInputId,workControlRevision:request.workControlRevision } : {}) };
+        const data = { resultFormat:'references-v1',prompt: request.prompt, idempotencyKey: 'task:' + id, executionPrincipalId: agent.ownerId, ...(request.workId ? { workId: request.workId, budgetGroupId: request.budgetGroupId ?? request.workId,workRound:request.workRound,workInputId:request.workInputId,workControlRevision:request.workControlRevision } : {}) };
         await client.query('INSERT INTO tasks(id,agent_id,principal_id,state,request_key,input_hash,data,parent_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [id, agent.id, request.principalId, 'queued', key, inputHash, JSON.stringify(data), request.parentTaskId ?? null]);
         const jobId = await this.boss.send('agent-task', { taskId: id }, { id, group: { id: agent.id }, retryLimit: 0, db: { executeSql: (sql, values) => client.query(sql, values) } });
         if (!jobId) fail('CONFLICT', 'Task job was not accepted');
@@ -79,7 +79,7 @@ export class TaskQueue {
                     continue;
                 try {
                     const result = await this.executeAdmitted({ principalId: row.data.executionPrincipalId, initiatingPrincipalId: row.principal_id, agentId: row.agent_id, prompt: row.data.prompt, idempotencyKey: row.data.idempotencyKey, taskId: row.id, workId: row.data.workId,workRound:row.data.workRound,workInputId:row.data.workInputId,workControlRevision:row.data.workControlRevision, budgetGroupId: row.data.budgetGroupId ?? row.parent_id ?? row.id });
-                    await this.host.db.pool.query("UPDATE tasks SET data=data||$2::jsonb WHERE id=$1 AND state='running'", [row.id, JSON.stringify({ runId: result.id, output: result.output ?? '' })]);
+                    await this.host.db.pool.query("UPDATE tasks SET data=data||$2::jsonb WHERE id=$1 AND state='running'", [row.id, JSON.stringify({ resultFormat:'references-v1',runId: result.id, output: result.output ?? '' })]);
                     await this.host.results.capture(row, result);
                     await this.host.db.pool.query("UPDATE tasks SET state=$2,data=data||$3::jsonb,updated_at=now() WHERE id=$1 AND state='running'", [row.id, result.state, JSON.stringify({ runId: result.id, output: result.output ?? '' })]);
                 }
@@ -106,7 +106,7 @@ export class TaskQueue {
             if (!actor.active || actor.companyId !== agent.companyId) fail('PERMISSION_DENIED', 'Task receipt belongs to another company or inactive account');
         } else await this.host.authorize(principalId, row.agent_id, 'read');
         const result = await this.host.results.view(principalId, id);
-        return { id: row.id, agentId: row.agent_id, principalId: row.principal_id, initiatingPrincipalId: row.principal_id, executionPrincipalId: row.data.executionPrincipalId, workId: row.data.workId,workRound:row.data.workRound,workInputId:row.data.workInputId, state: row.state, parentTaskId: row.parent_id, runId: row.data.runId, output: !result || result.processAvailable ? row.data.output : undefined, result, error: row.data.error, createdAt: row.created_at, updatedAt: row.updated_at };
+        return { id: row.id, agentId: row.agent_id, principalId: row.principal_id, initiatingPrincipalId: row.principal_id, executionPrincipalId: row.data.executionPrincipalId, workId: row.data.workId,workRound:row.data.workRound,workInputId:row.data.workInputId, state: row.state, parentTaskId: row.parent_id, runId: row.data.runId, output: result?.processAvailable||!result&&(!row.data.resultFormat||row.data.executionPrincipalId===principalId) ? row.data.output : undefined, result,resultPending:!!row.data.resultFormat&&!result, error: row.data.error, createdAt: row.created_at, updatedAt: row.updated_at };
     }
     private async executeAdmitted(request: TaskRequest) {
         const deadline = Date.now() + 30000;
@@ -117,6 +117,7 @@ export class TaskQueue {
                 const { agent } = await this.host.organization.authorizeAgent(initiator, request.agentId, 'dispatch');
                 if (agent.ownerId !== request.principalId) fail('PERMISSION_DENIED', 'Task ownership changed before execution');
                 if (request.workId) await this.host.coordination?.authorizeExecution(initiator, request.workId, request.agentId,this.host.db.pool,request.taskId);
+                await this.host.coordination?.control.guard(request);
                 return await this.executor.run(request);
             }
             catch (error) {
@@ -132,7 +133,7 @@ export class TaskQueue {
     }
     async summaries(agentId: string, principalId: string) {
         await this.host.organization.authorizeAgent(principalId, agentId, 'read');
-        const rows = (await this.host.db.pool.query('SELECT id,state,left(data->>\'output\',2000) AS summary,data->>\'runId\' AS "runId",data->\'error\' AS error,updated_at FROM tasks WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 30', [agentId])).rows;
+        const rows = (await this.host.db.pool.query("SELECT id,state,CASE WHEN data ? 'resultFormat' THEN '执行记录待整理或核实' ELSE left(data->>'output',2000) END AS summary,data->>'runId' AS \"runId\",data->'error' AS error,updated_at FROM tasks WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 30", [agentId])).rows;
         for (const row of rows) { const result = await this.host.results.view(principalId, row.id); if (result) { row.summary = result.summary; row.result = result; } }
         return rows;
     }

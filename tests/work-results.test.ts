@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { createFramework } from '../src/index.js';
 import { createServer } from '../src/server.js';
 import { TaskQueue } from '../src/tasks.js';
+import {FrameworkError} from '../src/errors.js';
 
 test('work returns control facts and authorized evidence instead of a raw output prefix', async () => {
     await mkdir('.test-data', { recursive: true });
@@ -38,4 +39,18 @@ test('work returns control facts and authorized evidence instead of a raw output
         const denied = await app.inject({ url: '/v1/tasks/' + view.assignments[0].taskId + '/result', headers: { authorization: 'Bearer ' + await host.issueAccessToken('bob') } });
         expect(denied.statusCode).toBe(403);
     } finally { await queue?.close(); await app.close(); await host.close(); }
+});
+
+test('failed result persistence never falls back to sharing a new raw process output',async()=>{
+    await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/result-failure-'))}),app=await createServer(host);
+    const queue=new TaskQueue(host,{async run(){return{id:randomUUID(),state:'succeeded',output:'PRIVATE-NEW-OUTPUT'};}});
+    try{
+        await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'admin',companyId:'one',role:'admin',permissions:[]});await host.putActor({id:'alice',companyId:'one',role:'employee',permissions:[]});await host.putAgent({id:'job',ownerId:'alice',companyId:'one',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});
+        host.results.capture=async()=>{throw new FrameworkError('RESULT_UNKNOWN','Simulated result storage failure');};
+        await queue.open();queue.registerRoutes(app);await queue.startWorker();const work=await host.coordination!.create('admin',{title:'Do not leak uncertain results',idempotencyKey:'one',assignments:[{agentId:'job',prompt:'bounded work'}]});
+        await expect.poll(async()=>(await host.coordination!.get('admin',work.id)).state,{timeout:10000}).toBe('reconciliation_required');
+        const view=await host.coordination!.get('admin',work.id);expect(JSON.stringify(view)).not.toContain('PRIVATE-NEW-OUTPUT');
+        expect((await queue.get(view.assignments[0].taskId,'admin')).output).toBeUndefined();
+        expect(JSON.stringify(await queue.summaries('job','admin'))).not.toContain('PRIVATE-NEW-OUTPUT');
+    }finally{await queue.close();await app.close();await host.close();}
 });

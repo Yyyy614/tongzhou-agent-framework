@@ -1,0 +1,1 @@
+{"type":"object","additionalProperties":false,"properties":{"prefix":{"type":"string","maxLength":100,"description":"在返回文本前加上的可选前缀"}}}

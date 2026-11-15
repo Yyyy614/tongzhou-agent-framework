@@ -94,7 +94,7 @@ export async function createCompanySession({ serverURL, dataDir, protection, run
         if (!boot) return { authenticated: false, serverURL };
         const employee = { id: boot.employee.id, displayName: boot.employee.displayName, companyId: boot.employee.companyId };
         const agents = boot.agents.map(agent => ({ id: agent.id, displayName: agent.displayName ?? agent.id, preset: agent.preset, presetName: agent.presetName }));
-        return { authenticated: true, serverURL, employee, agents, activeAgentId: active?.lease.agentId ?? null, runtimeReady: !!active?.started && runtime.isReady?.() !== false };
+        return { authenticated: true, serverURL, employee, agents, activeAgentId: active?.lease.agentId ?? null,workContext:active?.context??{resources:[]}, runtimeReady: !!active?.started && runtime.isReady?.() !== false };
     }
     async function login(input, register = false) {
         return exclusive(async () => {
@@ -181,6 +181,7 @@ export async function createCompanySession({ serverURL, dataDir, protection, run
                 if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,80}$/u.test(id)) throw failure('INVALID_INPUT', '记录编号无效');
                 if (kind === 'read-task') return request('/v1/tasks/' + id);
                 if(kind==='market-list')return request('/v1/market/releases?query='+encodeURIComponent(input?.query??''));
+                if(kind==='market-release')return request('/v1/market/releases/'+id);
                 if(kind==='market-submissions')return request('/v1/market/submissions');
                 if(kind==='market-submit')return request('/v1/market/submissions','POST',input,token,60000);
                 if(kind==='resource-index')return request('/v1/resources?query='+encodeURIComponent(input?.query??'')+(input?.domain?'&domain='+encodeURIComponent(input.domain):''));
@@ -192,8 +193,8 @@ export async function createCompanySession({ serverURL, dataDir, protection, run
                     if(!active?.started||active.released)throw failure('JOB_REQUIRED','请先进入自己的工作岗位');
                     const agentId=active.lease.agentId;
                     if(kind==='market-installed')return request('/v1/agents/'+agentId+'/market');
-                    if(kind==='skill-read')return request('/v1/agents/'+agentId+'/skills/'+id);
-                    if(kind==='context-select')return request('/v1/harness/clients/'+active.lease.id+'/context','PUT',input);
+                    if(kind==='skill-read')return request('/v1/agents/'+agentId+'/skills/'+id+'?offset='+Number(input?.offset??0)+(input?.path?'&path='+encodeURIComponent(input.path):''));
+                    if(kind==='context-select'){const result=await request('/v1/harness/clients/'+active.lease.id+'/context','PUT',input);active.context={resources:input.resources.map(ref=>({id:ref.id,version:ref.version})),...(input.workId?{workId:input.workId}:{})};return result;}
                     const result=await request('/v1/market/releases/'+id+(kind==='market-install'?'/install':'/uninstall'),'POST',{agentId,...(kind==='market-install'?{config:input?.config??{}}:{})});
                     // Keep the same per-job native home; replace the lease and descriptors after a mount change.
                     await connectAgent(agentId,{refresh:true});return result;

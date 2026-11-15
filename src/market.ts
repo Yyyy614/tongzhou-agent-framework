@@ -59,7 +59,11 @@ export class CapabilityMarket {
         const client = await this.host.db.pool.connect();
         try {
             await client.query('BEGIN'); await this.host.organization.lock(client);
-            await this.actor(principalId, client as any);
+            const currentActor=await this.actor(principalId, client as any);
+            if(currentActor.companyId!==actor.companyId)fail('PERMISSION_DENIED','Contributor company changed during upload');
+            const maintainer=(await client.query('SELECT owner_id FROM market_assets WHERE company_id=$1 AND asset_key=$2 ORDER BY created_at,id LIMIT 1',[actor.companyId,input.assetKey])).rows[0];
+            if(maintainer&&maintainer.owner_id!==currentActor.id&&currentActor.role!=='admin')fail('PERMISSION_DENIED','Only the capability maintainer submits a new version');
+            if(input.scope==='department'&&currentActor.role!=='admin'&&currentActor.departmentId!==input.departmentId)fail('PERMISSION_DENIED','Contributor department changed during upload');
             const concurrent = (await client.query('SELECT id FROM market_assets WHERE company_id=$1 AND asset_key=$2 AND version=$3', [actor.companyId, input.assetKey, input.version])).rows[0];
             if (concurrent) fail('CONFLICT', 'Capability submission changed concurrently');
             const data = { name: input.name, summary: input.summary, scope: input.scope, departmentId: input.departmentId, directory, files: decoded.files.map(([path, body]) => ({ path, bytes: body.length,digest:contentHash(body.toString('base64')) })), checks, inspection, grants: noGrants() };
@@ -71,6 +75,9 @@ export class CapabilityMarket {
     async get(principalId: string, id: string) { const actor = await this.actor(principalId); return this.dto(await this.row(actor, id, true), true); }
     async file(principalId:string,id:string,path:string,offset=0){
         const actor=await this.actor(principalId),row=await this.row(actor,id,true);
+        return this.packageFile(row,path,offset);
+    }
+    private async packageFile(row:any,path:string,offset:number){
         if(typeof path!=='string'||!row.data.files.some((f:any)=>f.path===path)||!Number.isInteger(offset)||offset<0)fail('NOT_FOUND','Reviewed package file is unavailable');
         const body=await readFile(await this.host.registry.packagePath(row.data.directory,'./'+path));
         if(row.data.files.find((f:any)=>f.path===path).digest!==contentHash(body.toString('base64')))fail('CONFLICT','Candidate file differs from submitted version');
@@ -78,6 +85,13 @@ export class CapabilityMarket {
         const value=body.toString('utf8');return{path,text:value.slice(offset,offset+16000),offset,nextOffset:offset+16000<value.length?offset+16000:null,digest:contentHash(body.toString('base64'))};
     }
     async history(principalId:string,id:string){const actor=await this.actor(principalId);await this.row(actor,id,true);return{items:(await this.host.db.pool.query('SELECT principal_id AS "principalId",action,data,created_at AS "createdAt" FROM market_history WHERE asset_id=$1 ORDER BY created_at',[id])).rows};}
+    async release(principalId:string,id:string){
+        const actor=await this.actor(principalId),row=await this.row(actor,id);
+        if(row.state!=='published')fail('NOT_FOUND','Published capability is unavailable');
+        if(row.kind!=='plugin')return this.dto(row);
+        const configSchema=JSON.parse(await readFile(await this.host.registry.packagePath(row.data.directory,row.data.inspection.manifest.configSchema),'utf8'));
+        return{...this.dto(row),configSchema,requestedPermissions:row.data.inspection.manifest.permissions};
+    }
     async submissions(principalId: string) {
         const actor = await this.actor(principalId), rows = (await this.host.db.pool.query('SELECT * FROM market_assets WHERE company_id=$1 ORDER BY created_at DESC LIMIT 200', [actor.companyId])).rows;
         return { items: rows.filter(row => row.owner_id === actor.id || this.reviewer(actor, row)).map(row => this.dto(row, true)) };
@@ -188,15 +202,17 @@ export class CapabilityMarket {
         const rows = (await this.host.db.pool.query('SELECT a.* FROM market_installations i JOIN market_assets a ON a.id=i.asset_id WHERE i.agent_id=$1 AND i.active=true ORDER BY a.created_at', [agentId])).rows;
         return { items: rows.filter(row => this.visible(actor, row)).map(row => this.dto(row)) };
     }
-    async skill(principalId: string, agentId: string, id: string, offset = 0) {
+    async skill(principalId: string, agentId: string, id: string, offset = 0,path='SKILL.md') {
         const { actor, agent } = await this.host.authorize(principalId, agentId);
         if (actor.id !== agent.ownerId && actor.role !== 'admin') fail('PERMISSION_DENIED', 'Read installed skills only for your job');
         const row = await this.row(actor, id);
         if (row.state !== 'published') fail('CONFLICT', 'Skill release was suspended');
         if (row.kind !== 'skill' || !(await this.host.db.pool.query('SELECT 1 FROM market_installations WHERE asset_id=$1 AND agent_id=$2 AND active=true', [id, agentId])).rowCount) fail('PERMISSION_DENIED', 'Skill is not installed on this job');
         const resource = await this.host.resources.read(actor.id, row.data.resourceRef.id, row.data.resourceRef.version, offset, 8000);
+        let markdown=resource.body,nextOffset=resource.nextOffset;
+        if(path!=='SKILL.md'){const file=await this.packageFile(row,path,offset);markdown=file.text;nextOffset=file.nextOffset;}
         const {body,...metadata}=resource;
-        return { ...this.dto(row), markdown: body, resource:metadata, resourceRef: { id: resource.id, version: resource.version }, nextOffset: resource.nextOffset, digest: resource.digest };
+        return { ...this.dto(row), markdown,path,files:row.data.files.map((f:any)=>({path:f.path,bytes:f.bytes})),resource:metadata, resourceRef: { id: resource.id, version: resource.version }, nextOffset, digest: resource.digest };
     }
     async granted(actor: Actor, agent: Agent, permission: string, toolRef?: string) {
         const owner = actor.id === agent.ownerId ? actor : await this.actor(agent.ownerId);
@@ -205,9 +221,19 @@ export class CapabilityMarket {
     }
     async guardTool(actor: Actor, agent: Agent, toolRef: string) {
         const binding = this.host.bindings(agent).find(b => toolRef.startsWith(b.pluginId + ':')); if (!binding) return;
+        const releases=(await this.host.db.pool.query("SELECT * FROM market_assets WHERE kind='plugin' AND asset_key=$1 AND version=$2 AND data ? 'publishedBy'",[binding.pluginId,binding.pluginVersion])).rows;
+        if(!releases.length)return;
         const rows = (await this.host.db.pool.query('SELECT a.*,i.owner_id AS installation_owner FROM market_installations i JOIN market_assets a ON a.id=i.asset_id WHERE i.agent_id=$1 AND i.active=true AND a.asset_key=$2 AND a.version=$3', [agent.id, binding.pluginId, binding.pluginVersion])).rows;
         const owner = actor.id === agent.ownerId ? actor : await this.actor(agent.ownerId);
-        if (rows.some(row => row.installation_owner !== agent.ownerId || row.state !== 'published' || !this.visible(owner, row))) fail('PLUGIN_UNAVAILABLE', 'Mounted market release is suspended or outside current scope');
+        if(!rows.length||rows.some(row => row.company_id!==agent.companyId||row.installation_owner !== agent.ownerId || row.state !== 'published' || !this.visible(owner, row)||!this.audience(owner,agent,row.data.grants)&&!!(row.data.grants.principalIds.length||row.data.grants.presetIds.length||row.data.grants.departmentIds.length||row.data.grants.allCompany))) fail('PLUGIN_UNAVAILABLE', 'Mounted market release is suspended or outside current scope');
+    }
+    async plugins(principalId:string){
+        const actor=await this.actor(principalId),rows=(await this.host.db.pool.query("SELECT * FROM market_assets WHERE kind='plugin' AND data ? 'publishedBy'")).rows;
+        return this.host.registry.list().filter(plugin=>{const origins=rows.filter(row=>row.asset_key===plugin.id&&row.version===plugin.version);return !origins.length||origins.some(row=>row.company_id===actor.companyId&&(actor.role==='admin'||row.state==='published'&&this.visible(actor,row)));}).map(({directory,...plugin})=>plugin);
+    }
+    async assertActivation(principalId:string,pluginId:string,version:string){
+        const actor=await this.actor(principalId),origins=(await this.host.db.pool.query("SELECT * FROM market_assets WHERE kind='plugin' AND asset_key=$1 AND version=$2 AND data ? 'publishedBy'",[pluginId,version])).rows;
+        if(origins.length&&!origins.some(row=>row.state==='published'&&this.visible(actor,row)))fail('PLUGIN_UNAVAILABLE','Market plugin execution is outside the current publication scope');
     }
     async uninstall(principalId: string, id: string, agentId: string) {
         const { actor, agent } = await this.host.authorize(principalId, agentId); requireUuid(id);
@@ -240,10 +266,11 @@ export class CapabilityMarket {
         app.post<{ Params: { id: string } }>('/v1/market/submissions/:id/review', { schema: { body: { ...changeSchema, required: [...changeSchema.required, 'decision'], properties: { ...changeSchema.properties, decision: { enum: ['approve', 'reject'] } } } } }, async request => this.review(await principal(request), request.params.id, request.body as any));
         app.post<{ Params: { id: string } }>('/v1/market/submissions/:id/publish', { schema: { body: publishSchema } }, async request => this.publish(await principal(request), request.params.id, request.body as any));
         app.get('/v1/market/releases', async request => this.releases(await principal(request), (request.query as any).query ?? ''));
+        app.get<{Params:{id:string}}>('/v1/market/releases/:id',async request=>this.release(await principal(request),request.params.id));
         app.post<{ Params: { id: string } }>('/v1/market/releases/:id/install', { schema: { body: { type: 'object', additionalProperties: false, required: ['agentId'], properties: { agentId: { type: 'string', maxLength: 64 }, config: { type: 'object' } } } } }, async request => this.install(await principal(request), request.params.id, (request.body as any).agentId, (request.body as any).config));
         app.post<{ Params: { id: string } }>('/v1/market/releases/:id/uninstall', { schema: { body: { type: 'object', additionalProperties: false, required: ['agentId'], properties: { agentId: { type: 'string', maxLength: 64 } } } } }, async request => this.uninstall(await principal(request), request.params.id, (request.body as any).agentId));
         app.put<{ Params: { id: string } }>('/v1/market/releases/:id/state', { schema: { body: { ...changeSchema, required: [...changeSchema.required, 'state'], properties: { ...changeSchema.properties, state: { enum: ['published', 'suspended'] } } } } }, async request => this.state(await principal(request), request.params.id, request.body as any));
         app.get<{ Params: { agentId: string } }>('/v1/agents/:agentId/market', async request => this.installed(await principal(request), request.params.agentId));
-        app.get<{ Params: { agentId: string; id: string } }>('/v1/agents/:agentId/skills/:id', async request => this.skill(await principal(request), request.params.agentId, request.params.id, Number((request.query as any).offset ?? 0)));
+        app.get<{ Params: { agentId: string; id: string } }>('/v1/agents/:agentId/skills/:id', async request => this.skill(await principal(request), request.params.agentId, request.params.id, Number((request.query as any).offset ?? 0),(request.query as any).path??'SKILL.md'));
     }
 }

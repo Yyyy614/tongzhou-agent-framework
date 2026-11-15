@@ -3,6 +3,8 @@ import { mkdir, mkdtemp } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createFramework } from '../src/index.js';
 import { createServer } from '../src/server.js';
+import {TaskQueue} from '../src/tasks.js';
+import {randomUUID} from 'node:crypto';
 
 test('resource indexes and ContextPacks enforce current ACL, immutable versions and a real content budget', async () => {
     await mkdir('.test-data', { recursive: true });
@@ -49,4 +51,17 @@ test('resource indexes and ContextPacks enforce current ACL, immutable versions 
         expect((await api('alice', '/v1/context-packs/' + second.json().id)).statusCode).toBe(409);
         expect((await api('alice', '/v1/resources/' + resource.id + '?version=invalid')).statusCode).toBe(400);
     } finally { await app?.close(); await host.close(); }
+});
+
+test('another participant completing does not invalidate this work context, but a work stop does',async()=>{
+    await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/parallel-context-'))}),app=await createServer(host);let release!:()=>void;const gate=new Promise<void>(r=>{release=r;});let bobFinished=false;
+    const queue=new TaskQueue(host,{async run(request){if(request.agentId==='alice-job')await gate;else bobFinished=true;return{id:randomUUID(),state:'succeeded',output:'private result'};}});
+    try{
+        await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'admin',role:'admin',companyId:'one',permissions:[]});for(const id of ['alice','bob']){await host.putActor({id,role:'employee',companyId:'one',permissions:[]});await host.putAgent({id:id+'-job',ownerId:id,companyId:'one',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});}
+        await queue.open();queue.registerRoutes(app);const work=await host.coordination!.create('admin',{title:'Parallel work context',idempotencyKey:'one',assignments:[{agentId:'alice-job',prompt:'Wait then complete'},{agentId:'bob-job',prompt:'Complete independently'}]});
+        const pack=await host.resources.context('alice','alice-job',{resources:[],workId:work.id});await queue.startWorker();await expect.poll(()=>bobFinished,{timeout:10000}).toBe(true);
+        const headers={authorization:'Bearer '+await host.issueAccessToken('alice')};expect((await app.inject({url:'/v1/context-packs/'+pack.id,headers})).statusCode).toBe(200);
+        const current=await host.coordination!.get('admin',work.id);await host.coordination!.control.command('admin',work.id,{revision:current.revision,idempotencyKey:'stop',action:'stop',reason:'No more actions'});
+        expect((await app.inject({url:'/v1/context-packs/'+pack.id,headers})).statusCode).toBe(409);
+    }finally{release();await queue.close();await app.close();await host.close();}
 });

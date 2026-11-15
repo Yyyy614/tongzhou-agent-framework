@@ -52,7 +52,7 @@ export async function createServer(host: Framework, options: { trustedProxyIP?: 
                 agentId: string;
             };
         }>('/agents/:agentId/logs', async (request) => host.listLogs({ ...request.params, principalId: (request as any).principalId }));
-        api.get('/plugins', async () => host.registry.list().map(({ directory, ...plugin }) => plugin));
+        api.get('/plugins', async request => host.market.plugins((request as any).principalId));
         api.get('/presets', async () => host.presets.list());
         api.get('/agents', async (request) => { const actor = await host.db.get<import('./types.js').Actor>('actors', (request as any).principalId); return (await host.db.list<import('./types.js').Agent>('agents')).filter(a => a.companyId === actor.companyId && (actor.role === 'admin' || a.ownerId === actor.id || actor.permissions.includes('agent.read:' + a.id))).map(({ config, plugins, ...agent }) => ({ ...agent, plugins: plugins?.map(({ config, ...binding }) => binding) })); });
         api.get<{

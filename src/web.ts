@@ -5,7 +5,7 @@ export function registerWeb(app: FastifyInstance,options:{publicBasePath:string;
         file: string;
         type: string;
     }> = { '/': { file: 'index.html', type: 'text/html; charset=utf-8' }, '/console': { file: 'index.html', type: 'text/html; charset=utf-8' }, '/console/': { file: 'index.html', type: 'text/html; charset=utf-8' } };
-    for (const name of ['app.js', 'api.js', 'ui.js', 'views.js', 'editors.js', 'employee-access.js', 'coordination-views.js', 'result-view.mjs', 'channels-view.js','entry-view.js'])
+    for (const name of ['app.js', 'api.js', 'ui.js', 'views.js', 'editors.js', 'employee-access.js', 'coordination-views.js', 'result-view.mjs','structured-result.js', 'channels-view.js','entry-view.js'])
         files['/assets/' + name] = { file: name, type: 'application/javascript; charset=utf-8' };
     files['/assets/styles.css'] = { file: 'styles.css', type: 'text/css; charset=utf-8' };
     const studio=options.profile==='studio';

@@ -2,6 +2,7 @@ import { api, idempotency } from './api.js';
 import { h, button, field, select, checklist, checked, modal, toast, details, heading, panel, table, badge, date, liveRefresh } from './ui.js';
 import { editEmployee } from './editors.js';
 import { resultView, readableText } from './result-view.mjs';
+import {structuredResultView} from './structured-result.js';
 const employeeName = (ctx, id) => ctx.employees.find(e => e.id === id)?.displayName ?? id ?? '—';
 const agentName = (ctx, id) => ctx.agents.find(a => a.id === id)?.displayName ?? id;
 const states = { queued: '排队中', running: '执行中', waiting_review: '等待人工核对', needs_attention: '需要处理', completed: '已核对完成', changes_requested: '核对未通过', pending: '等待处理', delivered: '已送达收件箱', cancelled: '已取消', processed: '已处理', failed: '失败', succeeded: '成功', reconciliation_required: '结果待核实', waiting_approval: '等待写操作审批' };
@@ -88,7 +89,7 @@ export async function workView(ctx) {
         const decision = select([{ value: 'approve', label: '结果符合要求' }, { value: 'reject', label: '结果需要调整' }], 'approve');
         const content = h('div', {}, h('p', {}, current.title), h('p', {}, '状态：', state(current.state), ' · 受限分配：' + current.restrictedAssignments), table([
             { label: '岗位 / 负责人', render: a => agentName(ctx, a.agentId) + ' / ' + employeeName(ctx, a.ownerId) }, { label: '状态', render: a => state(a.state) }, { label: '结果摘要', render: a => readableText(a.summary, { [a.agentId]: agentName(ctx, a.agentId), [a.ownerId]: employeeName(ctx, a.ownerId) }) },
-            { label: '详情', render: a => button('查看完整结果', async () => { const record = await api('/v1/tasks/' + a.taskId); modal('岗位执行结果', agentName(ctx, a.agentId), resultView(record.output ?? '暂无结果', { names: { [a.agentId]: agentName(ctx, a.agentId), [a.ownerId]: employeeName(ctx, a.ownerId) }, technical: record }), null, { wide: true }); }, 'text') }
+            { label: '详情', render: a => button('查看完整结果', async () => { const record = await api('/v1/tasks/' + a.taskId); modal('岗位执行结果', agentName(ctx, a.agentId), record.result||record.resultPending?structuredResultView(record):resultView(record.output ?? '暂无结果', { names: { [a.agentId]: agentName(ctx, a.agentId), [a.ownerId]: employeeName(ctx, a.ownerId) }, technical: record }), null, { wide: true }); }, 'text') }
         ], current.assignments), current.review ? h('p', {}, '核对：' + employeeName(ctx, current.review.reviewed_by) + ' · ' + current.review.reason) : null);
         if (current.canReview) content.append(field('核对决定', decision), field('核对说明', reason), h('p', { class: 'field-hint' }, '记录这份工作结果的核对决定。业务发布仍需对应插件与写操作审批。'));
         modal('工作结果与核对', '请阅读各岗位结果后核对；执行凭证可在详情中展开。', content, current.canReview ? async () => { await api('/v1/work/' + current.id + '/review', 'POST', { revision: current.revision, decision: decision.value, reason: reason.value.trim() }); toast('核对决定已记录'); await reload(); } : null, { wide: true, saveLabel: '提交人工核对' });

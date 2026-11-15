@@ -19,7 +19,14 @@ export async function requireAdmin(host: Framework, principalId: string, client?
 export class AdminControl {
     constructor(readonly host: Framework) { }
     async employees(principalId: string) { const admin = await requireAdmin(this.host, principalId); return (await this.host.db.list<Actor>('actors')).filter(a => a.companyId === admin.companyId).map(versioned); }
-    async agents(principalId: string) { const admin = await requireAdmin(this.host, principalId); const actors = new Map((await this.host.db.list<Actor>('actors')).map(a => [a.id, a])); return (await this.host.db.list<Agent>('agents')).filter(a => a.companyId === admin.companyId).map(agent => { const owner = actors.get(agent.ownerId); const enabled = new Set(this.host.bindings(agent).flatMap(b => { const p = this.host.registry.list().find(p => p.id === b.pluginId && p.version === b.pluginVersion); return p?.enabled ? p.manifest.provides.tools.map(t => p.id + ':' + t.id) : []; })); return { ...versioned(agent), effectiveTools: agent.active && owner?.active ? agent.allowedTools.filter(ref => enabled.has(ref) && (owner.role === 'admin' || owner.permissions.includes('tool.invoke:' + ref))) : [] }; }); }
+    async agents(principalId: string) {
+        const admin=await requireAdmin(this.host,principalId),actors=new Map((await this.host.db.list<Actor>('actors')).map(a=>[a.id,a]));
+        return Promise.all((await this.host.db.list<Agent>('agents')).filter(a=>a.companyId===admin.companyId).map(async agent=>{
+            const owner=actors.get(agent.ownerId),enabled=new Set(this.host.bindings(agent).flatMap(b=>{const p=this.host.registry.list().find(p=>p.id===b.pluginId&&p.version===b.pluginVersion);return p?.enabled?p.manifest.provides.tools.map(t=>p.id+':'+t.id):[];})),effectiveTools:string[]=[];
+            if(agent.active&&owner?.active)for(const ref of agent.allowedTools)if(enabled.has(ref)&&await this.host.hasPermission(owner,agent,'tool.invoke:'+ref,ref)){try{await this.host.market.guardTool(owner,agent,ref);effectiveTools.push(ref);}catch(error){if((error as any).code!=='PLUGIN_UNAVAILABLE')throw error;}}
+            return{...versioned(agent),effectiveTools};
+        }));
+    }
     async setAgentActive(principalId: string, id: string, active: boolean, expected: string) { const admin = await requireAdmin(this.host, principalId); const client = await this.host.db.pool.connect(); try {
         await client.query('BEGIN');
         const prior = (await client.query('SELECT data FROM agents WHERE id=$1 FOR UPDATE', [id])).rows[0]?.data as Agent | undefined;

@@ -151,6 +151,7 @@ export class Framework {
     }
     async resolveConnection(reference: string, principalId?: string) { return (principalId ? await this.channels.resolveConnection(principalId, reference) : null) ?? this.options.connections?.[reference]; }
     async validatePlugin(id: string, version: string, config: Record<string, unknown> = {}, principalId?: string) {
+        if(principalId)await this.market.assertActivation(principalId,id,version);
         const plugin = this.registry.get(id, version);
         const schema = JSON.parse(await readFile(await this.registry.packagePath(plugin.directory, plugin.manifest.configSchema), 'utf8'));
         if (!this.registry.ajv.validate(schema, config))

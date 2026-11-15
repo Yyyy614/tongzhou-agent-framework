@@ -39,5 +39,26 @@ test('actual provider requests contain only the current turn, authorized pack an
         expect(assessed).toMatchObject({action:'assign',agentId:'job'});
         expect(bodies[2].tools).toEqual([]); expect(JSON.stringify(bodies[2])).not.toMatch(/CURRENT-WORK|SECOND-WORK/);
         expect((await host.db.pool.query("SELECT data FROM usage WHERE data->>'purpose'='event-routing'")).rows[0].data.inputTokens).toBe(20);
+        await host.putActor({id:'admin',companyId:'one',role:'admin',permissions:[]});const adminHeaders={authorization:'Bearer '+await host.issueAccessToken('admin')};
+        expect((await app.inject({url:'/v1/admin/usage',headers:adminHeaders})).json().totals.requests).toBe(3);
+        expect((await app.inject({url:'/v1/admin/overview',headers:adminHeaders})).body).not.toContain('current turn finished');
     } finally { await runtime.close(); await app.close(); await provider.close(); await host.close(); }
+});
+
+test('revoking a selected source stops the next MCP action, not just the next model call',async()=>{
+    await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/context-revocation-'))}),app=await createServer(host),provider=Fastify();
+    provider.post('/v1/messages',()=>({id:'source-response',type:'message',role:'assistant',content:[{type:'tool_use',id:'write-after-source',name:'mcp__company__resource_create',input:{title:'Would be new action',body:'must not persist',domain:'validation'}}],stop_reason:'tool_use',usage:{input_tokens:20,output_tokens:10}}));await listenHttp(provider);
+    const runtime=new HarnessRuntime(app,host,{apiKey:'fixture',upstreamURL:provider.listeningOrigin});await listenHttp(app);
+    try{
+        await host.installPlugin(resolve('fixtures/conformance-plugin'));for(const id of ['alice','bob'])await host.putActor({id,companyId:'one',role:'employee',permissions:[]});await host.putAgent({id:'job',ownerId:'alice',companyId:'one',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});
+        const resource=await host.resources.create('bob',{title:'Revocable source',kind:'document',domain:'validation',body:'original authorized source',access:{scope:'personal',readerIds:['alice']},idempotencyKey:'one'}),headers={authorization:'Bearer '+await host.issueAccessToken('alice')};
+        const lease=(await app.inject({url:'/v1/harness/clients',method:'POST',headers,payload:{agentId:'job'}})).json();
+        expect((await app.inject({url:'/v1/harness/clients/'+lease.id+'/context',method:'PUT',headers,payload:{resources:[{id:resource.id,version:1}]}})).statusCode).toBe(200);
+        const identity={'x-company-turn-id':'1','x-deepseek-harness-session-id':'chat',authorization:'Bearer '+lease.token};await app.inject({url:'/internal/client/'+lease.id+'/turn/start',method:'POST',headers:identity,payload:{sessionId:'chat',turnId:'1'}});
+        expect((await app.inject({url:'/internal/client/'+lease.id+'/model/v1/messages',method:'POST',headers:{...identity,'x-api-key':lease.token},payload:{model:'deepseek-flash',max_tokens:128,messages:[{role:'user',content:'Use the selected source'}],tools:[]}})).statusCode).toBe(200);
+        await host.resources.update('bob',resource.id,{revision:resource.revision,access:{scope:'personal',readerIds:[]}});
+        const action=await app.inject({url:'/internal/client/'+lease.id+'/mcp',method:'POST',headers:identity,payload:{jsonrpc:'2.0',id:'write-after-source',method:'tools/call',params:{name:'resource_create',arguments:{title:'Would be new action',body:'must not persist',domain:'validation'}}}});
+        expect(action.statusCode).toBe(404);expect((await host.resources.index('alice')).items).toEqual([]);
+        expect((await host.db.pool.query("SELECT count(*)::int AS n FROM company_resources WHERE title='Would be new action'")).rows[0].n).toBe(0);
+    }finally{await runtime.close();await app.close();await provider.close();await host.close();}
 });

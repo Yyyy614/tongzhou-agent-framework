@@ -1,0 +1,1 @@
+{"schemaVersion":"0.1.0","id":"@example/market-text","version":"0.1.0","engine":{"framework":"^0.1.0","protocol":"1.0"},"entry":{"kind":"module","path":"./plugin.mjs"},"permissions":[],"provides":{"tools":[{"id":"text.format","inputSchema":"./input.json","outputSchema":"./output.json","effect":"read"}],"presets":[],"events":[]},"configSchema":"./config.json","dependencies":[]}

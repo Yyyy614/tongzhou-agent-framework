@@ -58,6 +58,7 @@ interface RunTool {
     execute: (input: any, key: string) => Promise<unknown>;
 }
 interface Scope {
+    modelBusy?:boolean;
     context?: RuntimeContext;
     report?: StructuredReport;
     workStop?:Promise<void>;
@@ -119,8 +120,8 @@ export class HarnessRuntime {
             };
         }>('/internal/model/:id/v1/messages', async (request, reply) => {
             const scope = await this.scope(request.params.id, String(request.headers['x-api-key'] ?? ''));
-            const result = await this.operation(scope, () => this.proxyModel(scope, request.body));
-            return reply.code(result.status).header('content-type', result.contentType).send(result.text);
+            if(scope.modelBusy)fail('CONFLICT','This turn already has a model request');scope.modelBusy=true;
+            try{const result = await this.operation(scope, () => this.proxyModel(scope, request.body));return reply.code(result.status).header('content-type', result.contentType).send(result.text);}finally{scope.modelBusy=false;}
         });
         app.post<{
             Params: {
@@ -148,6 +149,7 @@ export class HarnessRuntime {
                 if (!tool)
                     fail('PERMISSION_DENIED', 'Unknown or unauthorized tool');
                 await this.operation(scope, async () => {
+                    await scope.context?.validate();
                     const { actor, agent } = await this.host.authorize(scope.request.principalId, scope.request.agentId);
                     this.assertOpen(scope);
                     const permission = ({ memory_read: 'memory.self.read', memory_search: 'memory.self.read', memory_write: 'memory.self.propose_write', report_record: 'report.self.write',work_report:'report.self.write' } as Record<string, string>)[tool.name];
@@ -213,11 +215,13 @@ export class HarnessRuntime {
     }
     private async proxyModel(scope: Scope, body: any) {
         this.assertOpen(scope);
+        if(!body||typeof body!=='object')fail('INVALID_INPUT','Invalid model request');
         if(!scope.context){const {actor,agent}=await this.host.authorize(scope.request.principalId,scope.request.agentId);scope.context=await RuntimeContext.create(this.host,actor,agent,scope.request.prompt,scope.request.contextResources,scope.request.contextWorkId??scope.request.workId);}
         body=scope.context.request(body);
         const allowed = new Set(scope.tools.map(t => 'mcp__company__' + t.name));
         if (!body || body.model !== (this.options.model ?? 'deepseek-flash') || !Number.isInteger(body.max_tokens) || body.max_tokens < 1 || body.max_tokens > 1024 || JSON.stringify(body).length > 64000 || !Array.isArray(body.tools ?? []) || (body.tools ?? []).some((t: any) => !allowed.has(t.name)))
             fail('INVALID_INPUT', 'Model request exceeds managed policy');
+        body.tools=scope.tools.map(tool=>({name:'mcp__company__'+tool.name,description:tool.description,input_schema:tool.inputSchema}));
         if (++scope.calls > 8)
             fail('BUDGET_EXCEEDED', 'Run model request limit reached');
         const estimatedInput = Math.ceil(Buffer.byteLength(JSON.stringify(body), 'utf8') / 2);
@@ -329,9 +333,9 @@ export class HarnessRuntime {
         }
         tools.push({name:'resource_index',effect:'read',description:'Search only your authorized company resource metadata. Process outputs are excluded unless explicitly requested. Read bodies separately.',inputSchema:{type:'object',additionalProperties:false,properties:{query:{type:'string',maxLength:240},domain:{type:'string',maxLength:80}}},execute:input=>this.host.resources.index(actor.id,input.query??'',input.domain)});
         tools.push({name:'resource_read',effect:'read',description:'Expand one versioned resource using current access rights. Paginated; never grants permissions.',inputSchema:{type:'object',additionalProperties:false,required:['id','version'],properties:{id:{type:'string',format:'uuid'},version:{type:'integer',minimum:1},offset:{type:'integer',minimum:0}}},execute:input=>this.host.resources.read(actor.id,input.id,input.version,input.offset??0,8000)});
-        tools.push({name:'resource_create',effect:'host',description:'Save a private deliverable or source. Sharing requires an explicit employee publication action in the workspace.',inputSchema:{type:'object',additionalProperties:false,required:['title','body','domain'],properties:{title:{type:'string',minLength:1,maxLength:160},body:{type:'string',maxLength:16000},domain:{type:'string',minLength:1,maxLength:80}}},execute:(input,key)=>this.host.resources.create(actor.id,{...input,kind:'artifact',access:{scope:'personal',readerIds:[]},sourceRefs:['run:'+runId],idempotencyKey:key})});
+        tools.push({name:'resource_create',effect:'host',description:'Save a versioned deliverable or source. Private by default. In an executing managed work, shareWithWork=true shares the deliverable only with currently authorized participants of that same work; never the whole company.',inputSchema:{type:'object',additionalProperties:false,required:['title','body','domain'],properties:{title:{type:'string',minLength:1,maxLength:160},body:{type:'string',maxLength:16000},domain:{type:'string',minLength:1,maxLength:80},shareWithWork:{type:'boolean'}}},execute:(input,key)=>{const workId=this.scopes.get(runId)?.request.workId;if(input.shareWithWork&&!workId)fail('PERMISSION_DENIED','Sharing to a work requires an executing assignment');const{shareWithWork,...data}=input;return this.host.resources.create(actor.id,{...data,kind:'artifact',access:{scope:'personal',readerIds:[],...(shareWithWork?{workId}:{})},sourceRefs:['run:'+runId],idempotencyKey:key});}});
         tools.push({name:'skill_index',effect:'read',description:'List installed company-reviewed Skills for this job. Read only the relevant Skill before use.',inputSchema:{type:'object',additionalProperties:false,properties:{}},execute:()=>this.host.market.installed(actor.id,agent.id)});
-        tools.push({name:'skill_read',effect:'read',description:'Read one installed and currently published Skill. Instructions do not grant tool or data permissions.',inputSchema:{type:'object',additionalProperties:false,required:['id'],properties:{id:{type:'string',format:'uuid'},offset:{type:'integer',minimum:0}}},execute:input=>this.host.market.skill(actor.id,agent.id,input.id,input.offset??0)});
+        tools.push({name:'skill_read',effect:'read',description:'Read an installed published Skill. Default path=SKILL.md; follow only needed reviewed references/assets by path, using nextOffset for pagination. Files are data only: no scripts execute. Instructions never grant permissions.',inputSchema:{type:'object',additionalProperties:false,required:['id'],properties:{id:{type:'string',format:'uuid'},offset:{type:'integer',minimum:0},path:{type:'string',maxLength:200}}},execute:input=>this.host.market.skill(actor.id,agent.id,input.id,input.offset??0,input.path??'SKILL.md')});
         const parentTaskId = this.scopes.get(runId)?.request.taskId;
         const workRequest=this.scopes.get(runId)?.request;
         if(workRequest?.workId&&parentTaskId&&this.host.coordination){
@@ -409,6 +413,7 @@ export class HarnessRuntime {
         scope.finishing = (async () => {
             await this.drainOperations(scope);
             const state = scope.reconcile || errorCode === 'RESULT_UNKNOWN' ? 'reconciliation_required' : scope.cancelled ? 'cancelled' : scope.approvalRequired ? 'waiting_approval' : errorCode ? 'failed' : 'succeeded';
+            try{
             await this.host.db.pool.query("UPDATE runs SET state=$2,data=data||$3::jsonb,updated_at=now() WHERE id=$1 AND state='running'", [id, state, JSON.stringify({ output: output.slice(0, 16000), source: 'harness-client', contextRefs: scope.contextRefs, ...(errorCode ? { error: { code: errorCode } } : {}) })]);
             if (scope.request.taskId) {
                 const task=(await this.host.db.pool.query('SELECT * FROM tasks WHERE id=$1',[scope.request.taskId])).rows[0];
@@ -416,7 +421,11 @@ export class HarnessRuntime {
                 await this.host.db.pool.query("UPDATE tasks SET state=$2,data=data||$3::jsonb,updated_at=now() WHERE id=$1 AND state='running'", [scope.request.taskId, state, JSON.stringify({ output: output.slice(0, 16000), runId: id, ...(errorCode ? { error: { code: errorCode } } : {}) })]);
             }
             await this.host.db.audit('run.' + state, { principalId: scope.request.principalId, agentId: scope.request.agentId, runId: id, source: 'harness-client', code: errorCode });
-            this.scopes.delete(id);
+            }catch(error){
+                await this.host.db.pool.query("UPDATE runs SET state='reconciliation_required',data=data||$2::jsonb,updated_at=now() WHERE id=$1",[id,JSON.stringify({error:{code:'RESULT_UNKNOWN'}})]);
+                if(scope.request.taskId)await this.host.db.pool.query("UPDATE tasks SET state='reconciliation_required',data=data||$2::jsonb,updated_at=now() WHERE id=$1",[scope.request.taskId,JSON.stringify({error:{code:'RESULT_UNKNOWN'}})]);
+                throw new FrameworkError('RESULT_UNKNOWN','Native result could not be persisted; completed actions were retained and will not be replayed');
+            }finally{this.scopes.delete(id);}
         })();
         return scope.finishing;
     }
@@ -473,9 +482,9 @@ export class HarnessRuntime {
             if (request.clientSessionId && request.clientConnectionId) {
                 request.taskId = randomUUID();
                 request.budgetGroupId = request.taskId;
-                await client.query('INSERT INTO tasks(id,agent_id,principal_id,state,request_key,input_hash,data) VALUES($1,$2,$3,$4,$5,$6,$7)', [request.taskId, agent.id, actor.id, 'running', 'native:' + requestKey, inputHash, JSON.stringify({ prompt: request.prompt, source: 'harness-client', clientSessionId: request.clientSessionId, clientConnectionId: request.clientConnectionId, executionPrincipalId: actor.id })]);
+                await client.query('INSERT INTO tasks(id,agent_id,principal_id,state,request_key,input_hash,data) VALUES($1,$2,$3,$4,$5,$6,$7)', [request.taskId, agent.id, actor.id, 'running', 'native:' + requestKey, inputHash, JSON.stringify({ resultFormat:'references-v1',prompt: request.prompt, source: 'harness-client', clientSessionId: request.clientSessionId, clientConnectionId: request.clientConnectionId, executionPrincipalId: actor.id })]);
             }
-            await client.query('INSERT INTO runs(id,agent_id,principal_id,state,data,request_key) VALUES($1,$2,$3,$4,$5,$6)', [id, agent.id, actor.id, 'running', JSON.stringify({ inputHash, pluginId: agent.pluginId, pluginVersion: agent.pluginVersion, preset: agent.preset, taskId: request.taskId,workId:request.workId,workRound:request.workRound,workInputId:request.workInputId }), requestKey]);
+            await client.query('INSERT INTO runs(id,agent_id,principal_id,state,data,request_key) VALUES($1,$2,$3,$4,$5,$6)', [id, agent.id, actor.id, 'running', JSON.stringify({ resultFormat:'references-v1',inputHash, pluginId: agent.pluginId, pluginVersion: agent.pluginVersion, preset: agent.preset, taskId: request.taskId,workId:request.workId,workRound:request.workRound,workInputId:request.workInputId }), requestKey]);
             if (request.taskId)
                 await client.query('UPDATE tasks SET data=data||$2::jsonb WHERE id=$1', [request.taskId, JSON.stringify({ runId: id })]);
             await client.query('COMMIT');
@@ -612,7 +621,7 @@ export class HarnessRuntime {
             fail('NOT_FOUND', 'Run does not exist');
         await this.host.authorize(principalId, row.agent_id, 'read');
         const result=row.data.taskId?await this.host.results.view(principalId,row.data.taskId):null;
-        const data={...row.data};if(result&&!result.processAvailable){delete data.output;delete data.report;}
+        const data={...row.data};if(result&&!result.processAvailable||!result&&row.data.resultFormat&&principalId!==row.principal_id){delete data.output;delete data.report;}
         return { id: row.id, agentId: row.agent_id, principalId: row.principal_id, state: row.state, ...data, ...(result?{result}:{}),createdAt: row.created_at, updatedAt: row.updated_at };
     }
     async cancel(id: string, principalId: string) {
