@@ -1,0 +1,43 @@
+name: 缺陷反馈
+description: 提交可在隔离环境复现的框架问题
+title: "[Bug] "
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 版本或提交
+      placeholder: main 分支的提交哈希
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 操作系统、Node.js/PostgreSQL版本、相关插件与Harness版本。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: 隔离复现步骤
+      description: 使用虚构资料，给出最少的配置和操作步骤。
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 预期与实际结果
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏日志或截图
+      description: 不要提交API密钥、设备令牌、员工和客户资料。
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: 公开内容
+      options:
+        - label: 已移除凭证和真实业务资料；安全漏洞将使用私密报告入口。
+          required: true

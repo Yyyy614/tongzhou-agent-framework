@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 私密安全报告
+    url: https://github.com/Yyyy614/tongzhou-agent-framework/security/advisories/new
+    about: 权限绕过、数据泄露和未授权执行等漏洞通过私密入口报告。

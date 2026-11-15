@@ -2,6 +2,8 @@
 
 面向企业内部协作的通用 Agent 框架：统一管理员工身份、岗位、权限、插件、独立记忆、工作执行、日志与模型用量。
 
+本项目采用[MIT许可证](LICENSE)，允许商业使用、修改和再分发，分发时须保留版权及许可证。欢迎通过[Issue](https://github.com/Yyyy614/tongzhou-agent-framework/issues)反馈问题，或按[贡献说明](CONTRIBUTING.md)提交改进。第三方组件的原有许可证和归属继续保留。
+
 业务能力放在插件和连接器中，内核负责可信边界。DeepSeek Harness 提供 Agent 运行和原生交互；公司账号、组织权限与数据归属由框架宿主管理。
 
 当前为开发测试版本：框架 ABI **0.1**，插件清单 **0.1/0.2**，通信协议 **1.0**，公司版桌面测试发行 **0.5.1**。这些版本分别管理。
@@ -128,4 +130,4 @@ npm run build
 - 共享知识发布、系统级插件沙箱、统一自动升级等仍需继续建设或单独验收。
 - 仓库不含`.env`、数据库、员工身份、真实日志、模型Key、第三方运行时缓存和本机安装包。
 
-[文档目录](docs/README.md) · [开发约定](CONTRIBUTING.md) · [第三方来源与许可](THIRD_PARTY_NOTICES.md)
+[文档目录](docs/README.md) · [贡献说明](CONTRIBUTING.md) · [MIT许可证](LICENSE) · [第三方来源与许可](THIRD_PARTY_NOTICES.md) · [安全报告](SECURITY.md)
