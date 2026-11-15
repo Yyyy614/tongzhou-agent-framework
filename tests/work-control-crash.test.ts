@@ -9,6 +9,7 @@ import{createFramework}from'../src/index.js';
 import{createServer}from'../src/server.js';
 import{TaskQueue}from'../src/tasks.js';
 import{HostLease}from'../src/host-lease.js';
+import{testDatabase}from'./helpers/test-database.mjs';
 
 test('a killed executor restarts fail-closed and human-confirmed external effects are not repeated',async()=>{
     await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/work-crash-'));
@@ -18,7 +19,7 @@ test('a killed executor restarts fail-closed and human-confirmed external effect
         await expect.poll(async()=>{try{return JSON.parse(await readFile(resolve(root,'crash-ready.json'),'utf8'));}catch{if(child.exitCode!==null)throw Error('Crash fixture exited: '+errors);return null;}},{timeout:15000}).toBeTruthy();
         const original=JSON.parse(await readFile(resolve(root,'crash-ready.json'),'utf8'));
         const exited=once(child,'exit');child.kill('SIGKILL');await exited;
-        const database=JSON.parse(await readFile('.local/database.json','utf8'));
+        const database=await testDatabase();
         host=await createFramework({root,database});lease=await HostLease.acquire(host.db);app=await createServer(host);let reused=false;
         queue=new TaskQueue(host,{async run(request:any){const result=await host.coordination.control.actions.execute(request,'external-effect',{operation:'one'},async()=>{throw Error('Must not replay external effect');});reused=result.reused;return{id:randomUUID(),state:'succeeded',output:result.value.receipt};}});
         await queue.open();queue.registerRoutes(app);await queue.recoverInterrupted();await queue.startWorker();

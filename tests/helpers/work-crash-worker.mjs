@@ -1,10 +1,11 @@
 import{createFramework}from'../../src/index.ts';
 import{TaskQueue}from'../../src/tasks.ts';
 import{HostLease}from'../../src/host-lease.ts';
-import{readFile,writeFile,appendFile}from'node:fs/promises';
+import{writeFile,appendFile}from'node:fs/promises';
 import{resolve}from'node:path';
+import{testDatabase}from'./test-database.mjs';
 const root=resolve(process.argv[2]);if(!root.startsWith(resolve('.test-data')+ '/'.replace('/',process.platform==='win32'?'\\':'/')))throw Error('Test root is not isolated');
-const database=JSON.parse(await readFile('.local/database.json','utf8'));if(!['127.0.0.1','localhost'].includes(database.host))throw Error('Local database required');
+const database=await testDatabase();
 const host=await createFramework({root,database});await HostLease.acquire(host.db);
 await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'lead',companyId:'one',role:'admin',permissions:[]});await host.putActor({id:'alice',companyId:'one',role:'employee',permissions:[]});
 await host.putAgent({id:'alice-agent',companyId:'one',ownerId:'alice',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});
