@@ -1,5 +1,6 @@
 import { test, expect } from 'vitest';
 import Fastify from 'fastify';
+import { createServer } from 'node:net';
 import { listenHttp } from './helpers/http-server.js';
 
 test('an HTTP fixture uses a Fetch-compatible loopback port and reaches its real handler once', async () => {
@@ -34,4 +35,27 @@ test('unsafe explicit ports and application startup errors are not hidden by bin
         await expect(listenHttp(broken)).rejects.toBe(permissionError);
         expect(broken.server.listening).toBe(false);
     } finally { await unsafe.close(); await broken.close(); }
+});
+
+test('an application startup listener conflict is propagated before the HTTP binding retry phase', async () => {
+    const owner = Fastify(), app = Fastify(), nested = createServer();
+    let startupError: Error | undefined;
+    owner.get('/', async () => 'owner');
+    app.addHook('onReady', async () => {
+        await new Promise<void>((resolve, reject) => {
+            nested.once('error', error => { startupError = error; reject(error); });
+            nested.listen({ host: '127.0.0.1', port: Number(new URL(owner.listeningOrigin).port) }, () => resolve());
+        });
+    });
+    try {
+        const origin = await listenHttp(owner);
+        let received: unknown;
+        try { await listenHttp(app); } catch (error) { received = error; }
+        expect(startupError).toMatchObject({ code: 'EADDRINUSE', syscall: 'listen' });
+        expect(received).toBe(startupError); expect(app.server.listening).toBe(false);
+        expect(await (await fetch(origin)).text()).toBe('owner');
+    } finally {
+        if (nested.listening) await new Promise<void>(resolve => nested.close(() => resolve()));
+        await app.close(); await owner.close();
+    }
 });
