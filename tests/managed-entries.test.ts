@@ -20,7 +20,7 @@ for(const provider of ['dingtalk','feishu','wecom'] as const)test('company-manag
         const config={name:'Company responsibilities',enabled:true,mode:'execute',allowedPrincipalIds:['alice'],semantic:false,mappings:[{externalId:'verified-external-user',principalId:'alice',connectionId:connection.id}],targets:[{presetId:'company-worker',eventTypes:['message'],description:'Generic employee responsibility'}]};
         const source=(await app.inject({url:'/v1/admin/event-sources',method:'POST',headers,payload:config})).json();
         await host.entries!.start();await queue.startWorker();
-        const message=(id:string)=>({externalUserId:'verified-external-user',conversationId:'same-thread',messageId:id,text:'bounded follow-up '+id,isGroup:false,reply:{session:'fixture'}});
+        const message=(id:string)=>({externalUserId:'verified-external-user',conversationId:'same-thread',messageId:id,text:id==='1'?'/new bounded work':'bounded follow-up '+id,...(id==='2'?{replyToMessageId:'1'}:{}),isGroup:false,reply:{session:'fixture'}});
         const first=await receive(message('1'));expect(first.accepted).toBe(true);expect(first.managed).toBe(true);
         await expect.poll(()=>sent.length,{timeout:12000}).toBe(1);expect(sent[0]).not.toContain('PRIVATE-PROCESS');
         const firstEvent=await host.events.get('admin',first.id);const workId=firstEvent.workId;

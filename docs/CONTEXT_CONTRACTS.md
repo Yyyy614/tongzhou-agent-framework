@@ -71,3 +71,14 @@ interface MemorySource {
 内部 scanned 仅用于限额和操作记录，不显示给员工。hasMore 表示扫描尚未完成，不能解释为还有多少可见或隐藏资料。无匹配、扫描限制、读取/字符限制、来源中断与版本冲突分别表达。返回片段仍进行宿主标准版本和正文复验，适配器声明不授予任何新权限。
 
 工作笔记旧版本通过原读取接口 `?revision=N` 查看，返回 currentRevision 与 source-changed；正文沿用底层权限。生成成果保存生成时的不可变来源快照；最终执行过程仍受完整 Run 账本约束。work_report 的宿主回执同样封存当时来源，之后的修订不能让旧报告重新变成当前。
+
+
+## 0.8 事件与工作关联
+
+新接入显式传入 conversationId（会话容器），threadId 为兼容字段；可信平台可提供 topicId（真实话题）与 replyToEventId（同来源外部事件ID）。缺少 conversationId 的旧调用继续把 threadId 视为专用工作话题，旧记录不迁移覆盖。受管 IM 入口会传入真实 conversationId，不再把一个群当成一项工作。
+
+可靠关联按已认证的 workId/人工选择、回复、话题及受管对象匹配；多个不同工作冲突或没有可靠关联时要求选择。intent=new 明确创建新事项；intent=continue 没有可验证关联不会猜测。员工可在统一入口用 `/new 描述`、`/continue 工作UUID 描述` 明确选择，后者仍复验参与权限；其他控制继续使用工作中心。飞书适配保留官方消息事件中的 thread_id、parent_id/root_id；不支持关系字段的渠道使用显式选择，不猜造回复关系。[飞书官方事件说明](https://open.feishu.cn/document/server-docs/im-v1/message/events/receive)。
+
+同群多工作订阅并存。对象关联需管理员配置 correlationGroup、subjectSystems；只有受管身份的 Webhook/宿主事件及平台适配器可声明该命名空间的 subjectRef。跨人员另需 crossPrincipalCorrelation=true，并在关联、输入接纳及执行前核实参与权限，标题相似或模型建议不作为授权。关联组属于公司命名空间，不跨租户。来源调整、身份撤销、停止及等待仍由原控制路径复验。
+
+`POST /v1/events/:id/resolve` 可带 workId 确认现有工作，不带则明确创建新工作；请求必须带当前 revision 与 reason。`POST /v1/events/:id/association` 纠正后续关系，记录理由、版本和政策修订。已执行事件的原 workId、任务和回执不修改、不重放；associationWorkId 表达后续纠正。待确认候选只含当前人可参与的工作；隐藏候选和别人的事件正文不展示。后台 history 可追查判断与纠正理由。

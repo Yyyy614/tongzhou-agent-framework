@@ -11,11 +11,11 @@ import{EntryWorker}from'./entry-worker.js';
 import{EntryQr}from'./entry-qr.js';
 
 export type EntryProvider='dingtalk'|'feishu'|'wecom';
-export interface EntryMessage{externalUserId:string;conversationId:string;messageId:string;text:string;isGroup:boolean;reply:Record<string,unknown>;}
+export interface EntryMessage{externalUserId:string;conversationId:string;messageId:string;topicId?:string;replyToMessageId?:string;text:string;isGroup:boolean;reply:Record<string,unknown>;}
 export interface EntryTransport{send(reply:Record<string,unknown>,text:string):Promise<void>;close():Promise<void>;}
 export type EntryTransportFactory=(provider:EntryProvider,credentials:Record<string,string>,hooks:{receive:(message:EntryMessage)=>Promise<unknown>;health:(state:string)=>void})=>Promise<EntryTransport>;
 const providers=['dingtalk','feishu','wecom'];
-const messageSchema={type:'object',additionalProperties:false,required:['externalUserId','conversationId','messageId','text','isGroup','reply'],properties:{externalUserId:{type:'string',minLength:1,maxLength:240},conversationId:{type:'string',minLength:1,maxLength:240},messageId:{type:'string',minLength:1,maxLength:240},text:{type:'string',minLength:1,maxLength:8000},isGroup:{type:'boolean'},reply:{type:'object'}}};
+const messageSchema={type:'object',additionalProperties:false,required:['externalUserId','conversationId','messageId','text','isGroup','reply'],properties:{topicId:{type:'string',minLength:1,maxLength:160},replyToMessageId:{type:'string',minLength:1,maxLength:240},externalUserId:{type:'string',minLength:1,maxLength:240},conversationId:{type:'string',minLength:1,maxLength:240},messageId:{type:'string',minLength:1,maxLength:240},text:{type:'string',minLength:1,maxLength:8000},isGroup:{type:'boolean'},reply:{type:'object'}}};
 
 /** Optional trusted entry adapter. Work, tools, memory and authority remain in the host. */
 export class EntryConnections{
@@ -68,7 +68,7 @@ export class EntryConnections{
         const managed=await this.host.events.acceptEntry(connection,message);if(managed)return managed;
         const bind=/^\/bind ([A-Za-z0-9_-]{32})\s*$/u.exec(message.text);if(bind){const result=await this.host.db.pool.query("UPDATE entry_pairings SET state='claimed',data=$3 WHERE connection_id=$1 AND code_hash=$2 AND state='pending' AND expires_at>now() RETURNING id",[id,contentHash(bind[1]),JSON.stringify({externalUserId:message.externalUserId})]);return{accepted:!!result.rowCount,bindingPending:true};}
         const binding=(await this.host.db.pool.query('SELECT * FROM entry_bindings WHERE connection_id=$1 AND external_id=$2 AND active',[id,message.externalUserId])).rows[0];if(!binding)return{accepted:false,reason:'UNBOUND_IDENTITY'};
-        const key=contentHash([id,message.messageId]),hash=contentHash([message.externalUserId,message.conversationId,message.text,message.isGroup]),eventId=randomUUID();
+        const key=contentHash([id,message.messageId]),hash=contentHash([message.externalUserId,message.conversationId,message.text,message.isGroup,message.topicId??null,message.replyToMessageId??null]),eventId=randomUUID();
         const inserted=await this.host.db.pool.query('INSERT INTO entry_events(id,connection_id,binding_id,request_key,input_hash,state,payload,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(request_key) DO NOTHING RETURNING id',[eventId,id,binding.id,key,hash,'pending',await this.vault.seal(message,connection.company_id+':'+eventId),JSON.stringify({bindingRevision:contentHash(binding),connectionRevision:contentHash(connection.data),command:message.text.trim().startsWith('/')})]);const event=(await this.host.db.pool.query('SELECT id,input_hash FROM entry_events WHERE request_key=$1',[key])).rows[0];if(event.input_hash!==hash)fail('CONFLICT','Platform message identity changed content');return{accepted:true,id:event.id,duplicate:!inserted.rowCount};
     }
     async workReference(companyId:string,id:string){const row=(await this.host.db.pool.query('INSERT INTO entry_work_refs(work_id,company_id) VALUES($1,$2) ON CONFLICT(work_id) DO UPDATE SET work_id=EXCLUDED.work_id RETURNING number',[id,companyId])).rows[0];return'W-'+String(row.number).padStart(6,'0');}

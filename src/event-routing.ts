@@ -1,3 +1,4 @@
+import{EventLinks}from'./event-links.js';
 import { randomUUID, randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import type { PoolClient } from 'pg';
@@ -9,25 +10,28 @@ import { authenticateRequest } from './console-auth.js';
 import { fail } from './errors.js';
 
 export interface EventTarget { agentId?: string; presetId?: string; eventTypes: string[]; description: string; }
-export interface SourceConfig { name: string; enabled: boolean; mode: 'observe' | 'execute'; allowedPrincipalIds: string[]; targets: EventTarget[]; semantic: boolean; subscribeHostEvents?:boolean;correlationGroup?: string; mappings?: Array<{ externalId: string; principalId: string; connectionId?: string }>; revision?: string; }
-export interface CompanyEvent { externalEventId: string; threadId: string; eventType: string; summary: string; intent?: 'auto' | 'new' | 'continue'; subjectRef?: { system: string; id: string }; }
+export interface SourceConfig { name: string; enabled: boolean; mode: 'observe' | 'execute'; allowedPrincipalIds: string[]; targets: EventTarget[]; semantic: boolean; subscribeHostEvents?:boolean;correlationGroup?: string;crossPrincipalCorrelation?:boolean;subjectSystems?:string[]; mappings?: Array<{ externalId: string; principalId: string; connectionId?: string }>; revision?: string; }
+export interface CompanyEvent { externalEventId: string; threadId: string; eventType: string; summary: string;conversationId?:string;topicId?:string;replyToEventId?:string;workId?:string; intent?: 'auto' | 'new' | 'continue'; subjectRef?: { system: string; id: string }; }
 export interface EventAssessment { eventId: string; summary: string; eventType: string; candidates: Array<{ agentId: string; description: string }>; principalId: string; sourceId: string; }
 export interface EventDecision { action: 'assign' | 'ignore' | 'clarify'; agentId?: string; reason: string; }
 const id = { type: 'string', minLength: 1, maxLength: 64 }, ids = { type: 'array', maxItems: 200, uniqueItems: true, items: id };
-const sourceSchema = { type: 'object', additionalProperties: false, required: ['name', 'enabled', 'mode', 'allowedPrincipalIds', 'targets', 'semantic'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, enabled: { type: 'boolean' }, mode: { enum: ['observe', 'execute'] }, allowedPrincipalIds: ids, semantic: { type: 'boolean' },subscribeHostEvents:{type:'boolean'}, correlationGroup: { type: 'string', maxLength: 80 }, mappings: { type: 'array', maxItems: 500, items: { type: 'object', additionalProperties: false, required: ['externalId', 'principalId'], properties: { externalId: { type: 'string', minLength: 1, maxLength: 240 }, principalId: id, connectionId: { type: 'string', maxLength: 36 } } } }, targets: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'object', additionalProperties: false, required: ['eventTypes', 'description'], oneOf: [{ required: ['agentId'] }, { required: ['presetId'] }], properties: { agentId: id, presetId: id, description: { type: 'string', minLength: 1, maxLength: 1000 }, eventTypes: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 80 } } } } }, revision: { type: 'string', pattern: '^[a-f0-9]{64}$' } } };
-const eventSchema = { type: 'object', additionalProperties: false, required: ['externalEventId', 'threadId', 'eventType', 'summary'], properties: { externalEventId: { type: 'string', minLength: 1, maxLength: 160 }, threadId: { type: 'string', minLength: 1, maxLength: 160 }, eventType: { type: 'string', minLength: 1, maxLength: 80 }, summary: { type: 'string', minLength: 1, maxLength: 8000 }, intent: { enum: ['auto', 'new', 'continue'] }, subjectRef: { type: 'object', additionalProperties: false, required: ['system', 'id'], properties: { system: { type: 'string', minLength: 1, maxLength: 80 }, id: { type: 'string', minLength: 1, maxLength: 160 } } } } };
+const sourceSchema = { type: 'object', additionalProperties: false, required: ['name', 'enabled', 'mode', 'allowedPrincipalIds', 'targets', 'semantic'], properties: { name: { type: 'string', minLength: 1, maxLength: 100 }, enabled: { type: 'boolean' }, mode: { enum: ['observe', 'execute'] }, allowedPrincipalIds: ids, semantic: { type: 'boolean' },subscribeHostEvents:{type:'boolean'}, crossPrincipalCorrelation:{type:'boolean'},subjectSystems:{type:'array',maxItems:32,uniqueItems:true,items:{type:'string',minLength:1,maxLength:80}},correlationGroup: { type: 'string', maxLength: 80 }, mappings: { type: 'array', maxItems: 500, items: { type: 'object', additionalProperties: false, required: ['externalId', 'principalId'], properties: { externalId: { type: 'string', minLength: 1, maxLength: 240 }, principalId: id, connectionId: { type: 'string', maxLength: 36 } } } }, targets: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'object', additionalProperties: false, required: ['eventTypes', 'description'], oneOf: [{ required: ['agentId'] }, { required: ['presetId'] }], properties: { agentId: id, presetId: id, description: { type: 'string', minLength: 1, maxLength: 1000 }, eventTypes: { type: 'array', minItems: 1, maxItems: 32, items: { type: 'string', minLength: 1, maxLength: 80 } } } } }, revision: { type: 'string', pattern: '^[a-f0-9]{64}$' } } };
+const eventSchema = { type: 'object', additionalProperties: false, required: ['externalEventId', 'threadId', 'eventType', 'summary'], properties: {conversationId:{type:'string',minLength:1,maxLength:160},topicId:{type:'string',minLength:1,maxLength:160},replyToEventId:{type:'string',minLength:1,maxLength:160},workId:{type:'string',format:'uuid'}, externalEventId: { type: 'string', minLength: 1, maxLength: 160 }, threadId: { type: 'string', minLength: 1, maxLength: 160 }, eventType: { type: 'string', minLength: 1, maxLength: 80 }, summary: { type: 'string', minLength: 1, maxLength: 8000 }, intent: { enum: ['auto', 'new', 'continue'] }, subjectRef: { type: 'object', additionalProperties: false, required: ['system', 'id'], properties: { system: { type: 'string', minLength: 1, maxLength: 80 }, id: { type: 'string', minLength: 1, maxLength: 160 } } } } };
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
 type Query = Pick<PoolClient, 'query'>;
 
 /** Sources are company-managed. Routing proposes work; the existing host admits it. */
 export class EventRouting {
     private queue?: TaskQueue; private timer?: ReturnType<typeof setTimeout>; private running?: Promise<void>; private stopped = true;
-    constructor(readonly host: Framework) {}
+    readonly links:EventLinks;constructor(readonly host: Framework) {this.links=new EventLinks(host);}
     async open() {
         await this.host.db.pool.query(`
           CREATE TABLE IF NOT EXISTS event_sources(id uuid PRIMARY KEY,company_id text NOT NULL,owner_id text NOT NULL,revision integer NOT NULL DEFAULT 1,token_hash text NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
           CREATE TABLE IF NOT EXISTS company_events(id uuid PRIMARY KEY,source_id uuid NOT NULL REFERENCES event_sources(id),company_id text NOT NULL,principal_id text NOT NULL,external_id text NOT NULL,thread_ref text NOT NULL,input_hash text NOT NULL,state text NOT NULL,generation integer NOT NULL DEFAULT 0,lease_until timestamptz,work_id uuid,data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),updated_at timestamptz NOT NULL DEFAULT now(),UNIQUE(source_id,external_id));
           CREATE TABLE IF NOT EXISTS event_subscriptions(id uuid PRIMARY KEY,company_id text NOT NULL,source_id uuid NOT NULL REFERENCES event_sources(id),principal_id text NOT NULL,thread_ref text NOT NULL,work_id uuid NOT NULL REFERENCES work_items(id),agent_id text NOT NULL,active boolean NOT NULL DEFAULT true,correlation_key text,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(source_id,principal_id,thread_ref,work_id,agent_id));
+          ALTER TABLE event_subscriptions ADD COLUMN IF NOT EXISTS participation_required boolean NOT NULL DEFAULT false;
+          ALTER TABLE event_subscriptions ADD COLUMN IF NOT EXISTS topic_refs jsonb NOT NULL DEFAULT '[]';
+          ALTER TABLE event_subscriptions ADD COLUMN IF NOT EXISTS container_mode boolean NOT NULL DEFAULT false;
           CREATE TABLE IF NOT EXISTS event_decisions(id uuid PRIMARY KEY,event_id uuid NOT NULL REFERENCES company_events(id),policy_revision integer NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
           CREATE TABLE IF NOT EXISTS event_outbox(id uuid PRIMARY KEY,event_id uuid NOT NULL REFERENCES company_events(id),principal_id text NOT NULL,work_id uuid,state text NOT NULL DEFAULT 'pending',data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(event_id,principal_id));
           CREATE TABLE IF NOT EXISTS event_host_deliveries(source_id uuid NOT NULL REFERENCES event_sources(id),host_event_id uuid NOT NULL,state text NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(source_id,host_event_id));
@@ -101,7 +105,7 @@ export class EventRouting {
         const source = await this.source(principalId, sourceId), actor = await this.actor(principalId);
         if (!source.data.enabled || source.data.allowedPrincipalIds.length && !source.data.allowedPrincipalIds.includes(actor.id)) fail('PERMISSION_DENIED', 'Source does not admit this company member');
         const hash = contentHash({ input, principalId }), id = randomUUID();
-        await this.host.db.pool.query("INSERT INTO company_events(id,source_id,company_id,principal_id,external_id,thread_ref,input_hash,state,data) VALUES($1,$2,$3,$4,$5,$6,$7,'pending',$8) ON CONFLICT(source_id,external_id) DO NOTHING", [id, sourceId, actor.companyId, actor.id, input.externalEventId, input.threadId, hash, JSON.stringify({ input, ...metadata })]);
+        await this.host.db.pool.query("INSERT INTO company_events(id,source_id,company_id,principal_id,external_id,thread_ref,input_hash,state,data) VALUES($1,$2,$3,$4,$5,$6,$7,'pending',$8) ON CONFLICT(source_id,external_id) DO NOTHING", [id, sourceId, actor.companyId, actor.id, input.externalEventId, input.conversationId??input.threadId, hash, JSON.stringify({ input, ...metadata })]);
         const prior = (await this.host.db.pool.query('SELECT * FROM company_events WHERE source_id=$1 AND external_id=$2', [sourceId, input.externalEventId])).rows[0];
         if (prior.input_hash !== hash || prior.principal_id !== actor.id) fail('CONFLICT', 'Source event identity was reused with different contents');
         return { id: prior.id, state: prior.state, accepted: true };
@@ -114,9 +118,10 @@ export class EventRouting {
         const {source,mapping}=matches[0];
         if(!source.data.enabled)return{accepted:false,managed:true,reason:'SOURCE_DISABLED'};
         // Explicit control uses the authenticated work center until an entry command has its own receipt.
-        if(message.text.trim().startsWith('/'))return{accepted:false,managed:true,reason:'USE_WORK_CENTER_FOR_CONTROL'};
+        const command=/^\/(new|continue)(?:\s+(.+))?$/su.exec(message.text.trim());let intent:'new'|'continue'|undefined,workId:string|undefined,summary=message.text;
+        if(command){intent=command[1] as 'new'|'continue';if(intent==='new'){summary=command[2]?.trim()??'';if(!summary)return{accepted:false,managed:true,reason:'NEW_WORK_REQUIRES_DESCRIPTION'};}else{const selected=/^([a-f0-9-]{36})\s+([\s\S]+)$/iu.exec(command[2]??'');if(!selected)return{accepted:false,managed:true,reason:'SELECT_WORK_IN_WORK_CENTER'};workId=selected[1];summary=selected[2]!;}}else if(message.text.trim().startsWith('/'))return{accepted:false,managed:true,reason:'USE_WORK_CENTER_FOR_CONTROL'};
         const sealed=await this.host.entries!.vault.seal(message,connection.company_id+':managed:'+connection.id+':'+message.messageId);
-        const accepted=await this.ingest(mapping.principalId,source.id,{externalEventId:contentHash([connection.id,message.messageId]),threadId:contentHash([connection.id,message.conversationId]),eventType:'message',summary:message.text},{managedEntry:{connectionId:connection.id,connectionRevision:contentHash(connection.data),externalId:message.externalUserId,messageId:message.messageId,sealed},replyState:'pending'});
+        const accepted=await this.ingest(mapping.principalId,source.id,{externalEventId:contentHash([connection.id,message.messageId]),threadId:contentHash([connection.id,message.conversationId]),conversationId:contentHash([connection.id,message.conversationId]),...(message.topicId?{topicId:message.topicId}:{}),...(message.replyToMessageId?{replyToEventId:contentHash([connection.id,message.replyToMessageId])}:{}),eventType:'message',summary,...(intent?{intent}:{}),...(workId?{workId}:{})},{managedEntry:{connectionId:connection.id,connectionRevision:contentHash(connection.data),externalId:message.externalUserId,messageId:message.messageId,sealed},replyState:'pending'});
         return{...accepted,managed:true};
     }
     private async deliverEntries(){
@@ -146,7 +151,7 @@ export class EventRouting {
         return this.ingest(mapping.principalId,sourceId,input,{webhookIdentity:externalId});
     }
     async list(principalId:string){const actor=await this.actor(principalId);const rows=(await this.host.db.pool.query('SELECT id FROM company_events WHERE company_id=$1 ORDER BY created_at DESC LIMIT 100',[actor.companyId])).rows;const items=[];for(const row of rows){try{items.push(await this.get(actor.id,row.id));}catch(error){if((error as any).code!=='NOT_FOUND')throw error;}}return{items};}
-    async resolve(principalId:string,id:string,input:{revision:string;action:'assign'|'ignore';agentId?:string;reason:string}){
+    async resolve(principalId:string,id:string,input:{revision:string;action:'assign'|'ignore';agentId?:string;workId?:string;reason:string}){
         requireUuid(id);if(!['assign','ignore'].includes(input.action)||!input.reason?.trim()||input.reason.length>1000)fail('INVALID_INPUT','Choose a routing action and reason');
         const client=await this.host.db.pool.connect();try{
             await client.query('BEGIN');await this.host.organization.lock(client);const actor=await this.actor(principalId,client,true);
@@ -154,11 +159,25 @@ export class EventRouting {
             if(!event)fail('NOT_FOUND','Event is unavailable');
             if(contentHash([event.state,event.generation,event.updated_at])!==input.revision||!['needs_attention','observed'].includes(event.state)||event.work_id)fail('CONFLICT','Only an unresolved event without execution can be assigned');
             const source=(await client.query('SELECT * FROM event_sources WHERE id=$1',[event.source_id])).rows[0];
+            if(input.workId)await this.links.participate(event.principal_id,input.workId,client);
             if(!source.data.enabled||source.data.mode!=='execute')fail('CONFLICT','Enable execute mode before confirming a routing decision');
             if(input.action==='assign'&&!(await this.candidates(source,event,client)).some(c=>c.agentId===input.agentId))fail('PERMISSION_DENIED','Select a current authorized candidate');
-            await client.query("UPDATE company_events SET state='pending',data=data||$2::jsonb,updated_at=now() WHERE id=$1",[id,JSON.stringify({manualDecision:{action:input.action,agentId:input.agentId,reason:input.reason,by:actor.id,policyRevision:source.revision}})]);
+            await client.query("UPDATE company_events SET state='pending',data=data||$2::jsonb,updated_at=now() WHERE id=$1",[id,JSON.stringify({manualDecision:{action:input.action,agentId:input.agentId,workId:input.workId,reason:input.reason,by:actor.id,policyRevision:source.revision}})]);
             await client.query('INSERT INTO event_decisions(id,event_id,policy_revision,data) VALUES($1,$2,$3,$4)',[randomUUID(),id,source.revision,JSON.stringify({kind:'manual',by:actor.id,...input})]);
             await client.query('COMMIT');return this.get(actor.id,id);
+        }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+    }
+    async correct(principalId:string,id:string,input:{revision:string;workId:string;reason:string}){
+        requireUuid(id);requireUuid(input.workId);if(!input.reason?.trim()||input.reason.length>1000)fail('INVALID_INPUT','Correction requires a reason');const client=await this.host.db.pool.connect();
+        try{await client.query('BEGIN');await this.host.organization.lock(client);const actor=await this.actor(principalId,client,true),event=(await client.query('SELECT * FROM company_events WHERE id=$1 AND company_id=$2 FOR UPDATE',[id,actor.companyId])).rows[0];
+            if(!event||!event.work_id)fail('NOT_FOUND','An associated event is required');if(contentHash([event.state,event.generation,event.updated_at])!==input.revision||event.state==='routing')fail('CONFLICT','Event association changed');
+            const source=(await client.query('SELECT * FROM event_sources WHERE id=$1',[event.source_id])).rows[0];await this.originAuthority(source,event,client);await this.links.participate(event.principal_id,input.workId,client);
+            const candidates=await this.candidates(source,event,client),target=(await client.query('SELECT agent_id FROM work_assignments WHERE work_id=$1',[input.workId])).rows.find(r=>candidates.some(c=>c.agentId===r.agent_id));if(!target)fail('NOT_FOUND','Destination is outside current source roles');
+            const topic=this.links.topic(event),key=this.links.correlation(source,event);
+            if(topic)await client.query(`UPDATE event_subscriptions SET topic_refs=topic_refs-$4,active=CASE WHEN container_mode THEN jsonb_array_length(topic_refs-$4)>0 ELSE false END WHERE source_id=$1 AND principal_id=$2 AND thread_ref=$3 AND active=true AND (topic_refs ? $4 OR container_mode=false AND thread_ref=$4)`,[source.id,event.principal_id,event.thread_ref,topic]);
+            else if(key)await client.query('UPDATE event_subscriptions SET active=false WHERE source_id=$1 AND principal_id=$2 AND correlation_key=$3',[source.id,event.principal_id,key]);
+            await this.links.bind(client,source,event,input.workId,target.agent_id,key);const correction={workId:input.workId,version:(event.data.associationCorrection?.version??1)+1,reason:input.reason,by:actor.id,originalWorkId:event.work_id};
+            await client.query("UPDATE company_events SET data=data||$2::jsonb,updated_at=now() WHERE id=$1",[id,JSON.stringify({associationCorrection:correction})]);await client.query('INSERT INTO event_decisions(id,event_id,policy_revision,data) VALUES($1,$2,$3,$4)',[randomUUID(),id,source.revision,JSON.stringify({kind:'association-correction',...correction,execution:'retained; no replay'})]);await client.query('COMMIT');return this.get(actor.id,id);
         }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
     }
     async subscriptions(principalId:string){const actor=await this.actor(principalId);const rows=(await this.host.db.pool.query('SELECT * FROM event_subscriptions WHERE company_id=$1 AND active=true ORDER BY created_at DESC LIMIT 100',[actor.companyId])).rows;const items=[];for(const row of rows){try{await this.host.coordination!.get(actor.id,row.work_id);items.push({id:row.id,sourceId:row.source_id,workId:row.work_id,agentId:row.agent_id,createdAt:row.created_at});}catch(error){if((error as any).code!=='PERMISSION_DENIED')throw error;}}return{items};}
@@ -167,7 +186,8 @@ export class EventRouting {
         if (!event) fail('NOT_FOUND', 'Event is unavailable');
         let visibleWork = false; if (event.work_id) { try { await this.host.coordination?.get(actor.id, event.work_id); visibleWork = !!this.host.coordination; } catch (error) { if ((error as any).code !== 'PERMISSION_DENIED') throw error; } }
         if (actor.role !== 'admin' && event.principal_id !== actor.id && !visibleWork) fail('NOT_FOUND', 'Event is unavailable');
-        return { id: event.id, sourceId: event.source_id, state: event.state, workId: visibleWork || actor.role === 'admin' ? event.work_id : null, summary: event.data.input.summary, decision: event.data.decision ?? null,revision:contentHash([event.state,event.generation,event.updated_at]),replyState:event.data.replyState??null, createdAt: event.created_at, updatedAt: event.updated_at };
+        let associationVisible=visibleWork||actor.role==='admin';if(event.data.associationCorrection&&actor.role!=='admin'){try{await this.links.participate(actor.id,event.data.associationCorrection.workId);associationVisible=true;}catch{associationVisible=false;}}
+        return { id: event.id, sourceId: event.source_id, state: event.state, workId: visibleWork || actor.role === 'admin' ? event.work_id : null, summary:actor.role==='admin'||event.principal_id===actor.id?event.data.input.summary:'协作输入已登记；正文按来源权限保护',history:(await this.host.db.pool.query('SELECT policy_revision,data,created_at FROM event_decisions WHERE event_id=$1 ORDER BY created_at LIMIT 50',[event.id])).rows.map(r=>({kind:r.data.kind??r.data.action,reason:r.data.reason,policyRevision:r.policy_revision,version:r.data.version,createdAt:r.created_at})), decision: event.data.decision ?? null,associationWorkId:associationVisible?(event.data.associationCorrection?.workId??event.work_id):null,associationVersion:event.data.associationCorrection?.version??1,candidates:event.state==='needs_attention'?await this.links.visibleCandidates(actor.id,event.source_id,event.thread_ref):[],revision:contentHash([event.state,event.generation,event.updated_at]),replyState:event.data.replyState??null, createdAt: event.created_at, updatedAt: event.updated_at };
     }
     private async mark(event: any, state: string, decision: any, workId?: string) {
         await this.host.db.pool.query("UPDATE company_events SET state=$3,data=data||$4::jsonb,work_id=coalesce($5,work_id),lease_until=NULL,updated_at=now() WHERE id=$1 AND generation=$2 AND state='routing' AND lease_until>now()", [event.id, event.generation, state, JSON.stringify({ decision }), workId ?? null]);
@@ -178,23 +198,21 @@ export class EventRouting {
         try{await this.originAuthority(source,event);}catch(error){await this.mark(event,'blocked',{reason:'Company source identity was revoked',code:(error as any).code});return;}
         if (!source.data.enabled || operator.role !== 'admin' || operator.companyId !== source.company_id || originator.companyId !== source.company_id || source.data.allowedPrincipalIds.length && !source.data.allowedPrincipalIds.includes(originator.id)) { await this.mark(event, 'blocked', { reason: 'Source authorization changed' }); return; }
         const candidates = await this.candidates(source, event), input = event.data.input as CompanyEvent;
-        let subscriptions = input.intent === 'new' ? [] : (await this.host.db.pool.query('SELECT * FROM event_subscriptions WHERE source_id=$1 AND principal_id=$2 AND thread_ref=$3 AND active=true ORDER BY created_at DESC', [source.id, originator.id, event.thread_ref])).rows;
-        const correlationKey = input.subjectRef && source.data.correlationGroup ? contentHash([source.company_id, source.data.correlationGroup, input.subjectRef]) : null;
-        if (!subscriptions.length && input.intent !== 'new' && correlationKey) subscriptions = (await this.host.db.pool.query('SELECT * FROM event_subscriptions WHERE company_id=$1 AND principal_id=$2 AND correlation_key=$3 AND active=true ORDER BY created_at DESC', [source.company_id, originator.id, correlationKey])).rows;
-        subscriptions = subscriptions.filter(s => candidates.some(c => c.agentId === s.agent_id));
+        const association=await this.links.match(source,event,candidates),subscriptions=association.links,correlationKey=association.correlationKey;
         const workIds = [...new Set(subscriptions.map(s => s.work_id))];
-        if (workIds.length > 1) { await this.mark(event, 'needs_attention', { reason: 'Multiple subscribed works need clarification' }); return; }
+        if (workIds.length > 1) { await this.mark(event, 'needs_attention', { reason: 'Choose a work or create a new item',associationVersion:1 }); return; }
         if (workIds.length === 1) {
-            const subscription = subscriptions[0], work = await this.host.coordination!.get(operator.id, subscription.work_id);
+            const subscription = subscriptions[0];const bindingClient=await this.host.db.pool.connect();try{await bindingClient.query('BEGIN');await this.host.organization.lock(bindingClient);await this.originAuthority(source,event,bindingClient);const checked=await this.links.match(source,event,await this.candidates(source,event,bindingClient),bindingClient);if(!checked.links.some(s=>s.work_id===subscription.work_id&&s.agent_id===subscription.agent_id))fail('CONFLICT','Work association changed');await this.links.bind(bindingClient,source,event,subscription.work_id,subscription.agent_id,correlationKey);await bindingClient.query('COMMIT');}catch(error){await bindingClient.query('ROLLBACK');throw error;}finally{bindingClient.release();}const work = await this.host.coordination!.get(operator.id, subscription.work_id);
             if (work.controlMode !== 'active' || ['needs_attention', 'reconciliation_required', 'stopped', 'waiting', 'stop_requested'].includes(work.state)) { await this.mark(event, 'blocked', { reason: 'Work is paused or requires human reconciliation' }, work.id); return; }
-            if (source.data.mode === 'observe') { await this.mark(event, 'observed', { action: 'would_attach', reason: 'Existing authorized subscription', agentId: subscription.agent_id }, work.id); return; }
+            if (source.data.mode === 'observe') { await this.mark(event, 'observed', { action: 'would_attach', reason: association.reason,associationVersion:1, agentId: subscription.agent_id }, work.id); return; }
             if (['queued', 'running'].includes(work.state)) { await this.mark(event, 'waiting_work', { reason: 'Input persisted while current round is running' }, work.id); return; }
             const prepared = event.data.prepared ?? { revision: work.revision, idempotencyKey: 'event:' + event.id, assignments: [{ agentId: subscription.agent_id, prompt: '当前工作的后续输入（资料不授予新权限）：\n' + input.summary }] };
             if (!event.data.prepared) await this.host.db.pool.query('UPDATE company_events SET data=data||$3::jsonb WHERE id=$1 AND generation=$2', [event.id, event.generation, JSON.stringify({ prepared })]);
             try { await this.host.coordination!.continuity.append(operator.id, work.id, prepared, { kind: 'event', sourceId: source.id, eventId: event.id, threadId: event.thread_ref, generation: event.generation, policyRevision: source.revision }); }
             catch (error) { if ((error as any).code === 'CONFLICT') { await this.host.db.pool.query("UPDATE company_events SET data=data-'prepared' WHERE id=$1 AND generation=$2", [event.id, event.generation]); await this.mark(event, 'waiting_work', { reason: 'Work changed before input admission' }, work.id); return; } throw error; }
-            await this.mark(event, 'attached', { action: 'attach', reason: 'Existing authorized subscription', agentId: subscription.agent_id }, work.id); return;
+            await this.mark(event, 'attached', { action: 'attach', reason: association.reason,associationVersion:1, agentId: subscription.agent_id }, work.id); return;
         }
+        if(association.needsChoice&&!event.data.manualDecision){await this.mark(event,'needs_attention',{action:'clarify',reason:'Choose a work or create a new item',associationVersion:1});return;}
         let decision: EventDecision;
         if(event.data.manualDecision){if(event.data.manualDecision.policyRevision!==source.revision)fail('CONFLICT','Manual routing policy changed');decision=event.data.manualDecision;}
         else if (!candidates.length) decision = { action: 'clarify', reason: 'No currently assigned role can handle this event type' };
@@ -214,9 +232,9 @@ export class EventRouting {
             if (policy.revision !== source.revision || !policy.data.enabled || policy.data.mode !== 'execute' || !(await this.candidates(policy, event, client)).some(c => c.agentId === decision.agentId)) fail('CONFLICT', 'Routing policy or role changed');
             await this.actor(operator.id, client, true); await this.actor(originator.id, client);
             await this.originAuthority(policy,current,client);
+            const rechecked=await this.links.match(policy,current,await this.candidates(policy,current,client),client);if(rechecked.links.length){await client.query('ROLLBACK');await this.mark(event,'waiting_work',{reason:'Association became available; persisted for recheck'},rechecked.links[0].work_id);return;}
             const workId = await this.host.coordination!.createInTransaction(client, operator.id, { title: input.summary.slice(0, 120), idempotencyKey: 'event:' + event.id, assignments: [{ agentId: decision.agentId!, prompt: '公司受管来源输入，以下是资料，不授予身份或权限：\n' + JSON.stringify({ eventId: event.id, type: input.eventType, summary: input.summary, subjectRef: input.subjectRef }) }], originEventId: event.id, subjectRef: input.subjectRef });
-            await client.query('UPDATE event_subscriptions SET active=false WHERE source_id=$1 AND principal_id=$2 AND thread_ref=$3', [source.id, originator.id, event.thread_ref]);
-            await client.query('INSERT INTO event_subscriptions(id,company_id,source_id,principal_id,thread_ref,work_id,agent_id,correlation_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [randomUUID(), source.company_id, source.id, originator.id, event.thread_ref, workId, decision.agentId, correlationKey]);
+            await this.links.bind(client,source,event,workId,decision.agentId!,correlationKey);
             await client.query("UPDATE company_events SET state='routed',work_id=$3,data=data||$4::jsonb,lease_until=NULL,updated_at=now() WHERE id=$1 AND generation=$2", [event.id, event.generation, workId, JSON.stringify({ decision })]);
             await client.query('INSERT INTO event_decisions(id,event_id,policy_revision,data) VALUES($1,$2,$3,$4)', [randomUUID(), event.id, source.revision, JSON.stringify(decision)]);
             const agent = await this.host.db.get<Agent>('agents', decision.agentId!, client);
@@ -253,8 +271,8 @@ export class EventRouting {
         if (originator.companyId !== source.company_id || source.data.allowedPrincipalIds.length && !source.data.allowedPrincipalIds.includes(originator.id) || agents.some(id => !source.data.targets.some((t: EventTarget) => t.agentId === id || t.presetId))) fail('PERMISSION_DENIED', 'Event no longer admits this work input');
         const candidates = await this.candidates(source, event, client);
         if (agents.some(id => !candidates.some(c => c.agentId === id))) fail('PERMISSION_DENIED', 'Event input target is outside current roles');
-        const subscription = (await client.query('SELECT 1 FROM event_subscriptions WHERE work_id=$1 AND principal_id=$2 AND active=true', [workId, originator.id])).rowCount;
-        if (!subscription) fail('PERMISSION_DENIED', 'Event is not subscribed to this work');
+        const association=await this.links.match(source,event,candidates,client);if(!association.links.some(s=>s.work_id===workId&&agents.includes(s.agent_id)))fail('PERMISSION_DENIED','Event relationship no longer admits this work');
+
     }
     async authorizeWork(workId: string, agentId: string, client: Query, inputId?: string) {
         const work = (await client.query('SELECT data FROM work_items WHERE id=$1', [workId])).rows[0]; if (!work) return;
@@ -264,6 +282,7 @@ export class EventRouting {
             const event = (await client.query('SELECT * FROM company_events WHERE id=$1', [eventId])).rows[0]; if (!event) continue;
             const source = (await client.query('SELECT * FROM event_sources WHERE id=$1', [event.source_id])).rows[0], owner = await this.actor(source.owner_id, client), originator = await this.actor(event.principal_id, client);
             await this.originAuthority(source,event,client);
+            if(eventId!==work.data.originEventId&&(event.data.input.conversationId||event.data.input.subjectRef||event.data.input.workId||event.data.manualDecision?.workId))await this.links.participate(originator.id,workId,client);
             if (!source.data.enabled || source.data.mode !== 'execute' || owner.role !== 'admin' || owner.companyId !== source.company_id || originator.companyId !== source.company_id || source.data.allowedPrincipalIds.length && !source.data.allowedPrincipalIds.includes(originator.id) || !(await this.candidates(source, event, client)).some(c => c.agentId === agentId)) fail('CANCELLED', 'Company event source authority was revoked');
         }
     }
@@ -276,7 +295,8 @@ export class EventRouting {
         app.get<{ Params: { id: string } }>('/v1/events/:id', async request => this.get(await principal(request), request.params.id));
         app.get('/v1/events',async request=>this.list(await principal(request)));
         app.get('/v1/event-subscriptions',async request=>this.subscriptions(await principal(request)));
-        app.post<{Params:{id:string}}>('/v1/events/:id/resolve',{schema:{body:{type:'object',additionalProperties:false,required:['revision','action','reason'],properties:{revision:{type:'string',pattern:'^[a-f0-9]{64}$'},action:{enum:['assign','ignore']},agentId:id,reason:{type:'string',minLength:1,maxLength:1000}}}}},async request=>this.resolve(await principal(request),request.params.id,request.body as any));
+        app.post<{Params:{id:string}}>('/v1/events/:id/resolve',{schema:{body:{type:'object',additionalProperties:false,required:['revision','action','reason'],properties:{revision:{type:'string',pattern:'^[a-f0-9]{64}$'},action:{enum:['assign','ignore']},agentId:id,workId:{type:'string',format:'uuid'},reason:{type:'string',minLength:1,maxLength:1000}}}}},async request=>this.resolve(await principal(request),request.params.id,request.body as any));
+        app.post<{Params:{id:string}}>('/v1/events/:id/association',{schema:{body:{type:'object',additionalProperties:false,required:['revision','workId','reason'],properties:{revision:{type:'string',pattern:'^[a-f0-9]{64}$'},workId:{type:'string',format:'uuid'},reason:{type:'string',minLength:1,maxLength:1000}}}}},async request=>this.correct(await principal(request),request.params.id,request.body as any));
         app.delete<{Params:{id:string}}>('/v1/event-subscriptions/:id',async request=>{const actor=await this.actor(await principal(request),this.host.db.pool,true);requireUuid(request.params.id);const result=await this.host.db.pool.query('UPDATE event_subscriptions SET active=false WHERE id=$1 AND company_id=$2 RETURNING id',[request.params.id,actor.companyId]);if(!result.rowCount)fail('NOT_FOUND','Subscription is unavailable');return{removed:true};});
         app.post<{Params:{id:string}}>('/v1/hooks/event-sources/:id',{schema:{body:{type:'object',additionalProperties:false,required:['externalUserId','event'],properties:{externalUserId:{type:'string',minLength:1,maxLength:240},event:eventSchema}}}},async(request,reply)=>{const body=request.body as any;return reply.code(202).send(await this.webhook(request.params.id,String(request.headers.authorization??'').replace(/^Bearer /u,''),body.externalUserId,body.event));});
     }

@@ -12,7 +12,7 @@ export function normalize(provider,frame){
         }
         if(provider==='feishu'){
             const data=frame.event??frame,message=data.message,sender=data.sender;if(message?.message_type!=='text'||sender?.sender_type!=='user'||!sender.sender_id?.open_id)return null;
-            return{externalUserId:(sender.tenant_key??frame.header?.tenant_key??'')+':'+sender.sender_id.open_id,conversationId:message.chat_id,messageId:message.message_id,text:JSON.parse(message.content).text.trim(),isGroup:message.chat_type!=='p2p',reply:{messageId:message.message_id,uuid:digest(message.message_id).slice(0,32)}};
+            return{externalUserId:(sender.tenant_key??frame.header?.tenant_key??'')+':'+sender.sender_id.open_id,conversationId:message.chat_id,messageId:message.message_id,...(message.thread_id?{topicId:message.thread_id}:{}),...((message.parent_id??message.root_id)?{replyToMessageId:message.parent_id??message.root_id}:{}),text:JSON.parse(message.content).text.trim(),isGroup:message.chat_type!=='p2p',reply:{messageId:message.message_id,uuid:digest(message.message_id).slice(0,32)}};
         }
         if(provider==='wecom'){
             const data=frame.body;if(data?.msgtype!=='text'||!data.from?.userid||!frame.headers?.req_id)return null;
