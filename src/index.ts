@@ -324,8 +324,7 @@ export class Framework {
             if (params.id !== undefined) { const item = available.find(c => c.id === params.id); if (!item) fail('NOT_FOUND', 'Connection is not visible'); return { id: item.id, name: item.name, protocol: item.protocol, reference: 'connection:' + item.id, documentation: item.documentation, baseURL: item.baseURL, model: item.model }; }
             return { items: available.map(c => ({ id: c.id, name: c.name, kind: c.kind, protocol: c.protocol, reference: 'connection:' + c.id, excerpt: c.documentation.slice(0,240) })) };
         }
-        if (method === 'memory.read')
-            return this.readMemory({ ...bound, noteId: params.ref?.noteId });
+        if (method === 'memory.read') {const note=await this.readMemory({ ...bound, noteId: params.ref?.noteId });if(request.runId)await this.provenance.add(request.runId,actor.id,agent.id,await this.memory.origin(agent.id,note.noteId,note.version));return note;}
         if (method === 'memory.write')
             return this.writeMemory({ ...params.entry, ...bound },request.runId?await this.provenance.snapshot(request.runId):undefined);
         if (method === 'report.record')
@@ -459,6 +458,7 @@ export class Framework {
                     })();
                     this.workers.set(workerKey, workerPromise);
                 }
+                if(!request.runId)await this.provenance.add(runId,actor.id,agent.id,[{kind:'input',id:invocationId,ownerId:actor.id,agentId:agent.id,companyId:actor.companyId,digest:inputHash}]);
                 this.scopes.set(invocationId, { workerKey, request: { ...request, runId } });
                 let output: unknown;
                 try {
