@@ -1,3 +1,4 @@
+import{openVerifiedResource}from'./source-preview.js';
 import {api} from './api.js';
 import {h,button,field,select,checklist,checked,modal,heading,panel,table,badge,date,liveRefresh,toast,empty} from './ui.js';
 import {packageFiles,marketStates,eventStates} from './market-files.js';
@@ -36,8 +37,7 @@ export async function marketView(ctx){
 
 export async function resourcesView(ctx){
     const content=h('div'),query=input('',{type:'search','aria-label':'搜索授权资料',placeholder:'按关键词搜索当前获准读取的资料'});
-    async function read(item){const data=await api('/v1/resources/'+item.id+'?version='+item.version);const body=h('div',{},h('p',{class:'muted'},'版本 '+data.version+' · '+({current:'当前有效',expired:'来源已过期',superseded:'已有新版本'})[data.freshness]),h('pre',{class:'json-detail'},data.body),h('p',{},'来源：'+(data.sourceRefs.join('、')||'作者直接录入')));if(data.nextOffset)body.append(button('继续读取',attempt(async()=>{const next=await api('/v1/resources/'+item.id+'?version='+item.version+'&offset='+data.nextOffset);body.append(h('pre',{class:'json-detail'},next.body));})));
-        modal(data.title,'正文按当前权限展开；摘要和索引不能代替来源或授予访问权。',body,null,{wide:true});}
+    async function read(item){return openVerifiedResource({id:item.id,version:item.version});}
     async function load(){const data=await api('/v1/resources?query='+encodeURIComponent(query.value));if(ctx.isCurrent?.()===false)return;content.replaceChildren(panel('授权资源目录','仅返回当前身份可读的资源；工作过程原文不进入默认目录。',table([{label:'资料',key:'title'},{label:'分域',key:'domain'},{label:'版本',key:'version'},{label:'有效性',render:r=>({current:'当前有效',expired:'已过期',superseded:'旧版本'})[r.freshness]},{label:'操作',render:r=>button('按需展开',attempt(()=>read(r)))}],data.items)));}
     query.addEventListener('change',attempt(load));await load();return h('div',{},heading('公司资源','资料、成果与引用按版本管理，访问权限由宿主重新校验。',button('录入资料',()=>{const title=input('',{required:true}),domain=input('company',{required:true}),body=h('textarea',{required:true,maxLength:128000,rows:12}),scope=select([{value:'personal',label:'仅自己'},{value:'company',label:'公司内部'}],'personal'),sources=h('textarea',{maxLength:5000});modal('录入版本化资料','共享资料需要发布权限。后续修改产生新版本。',h('div',{},field('标题',title),field('资料分域',domain),field('正文',body),field('访问范围',scope),field('权威来源引用（每行一条）',sources)),async()=>{await api('/v1/resources','POST',{title:title.value,domain:domain.value,kind:'document',body:body.value,access:{scope:scope.value,readerIds:[]},sourceRefs:sources.value.split(/\r?\n/u).filter(Boolean),idempotencyKey:crypto.randomUUID()});await load();});},'primary')),h('div',{class:'toolbar'},query,liveRefresh(ctx,load)),content);
 }

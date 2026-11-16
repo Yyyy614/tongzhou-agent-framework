@@ -1,5 +1,6 @@
 import{test,expect}from'vitest';import{mkdir,mkdtemp}from'node:fs/promises';import{resolve}from'node:path';
 import{createFramework}from'../src/index.js';import{createServer}from'../src/server.js';
+import{TaskQueue}from'../src/tasks.js';import{randomUUID}from'node:crypto';
 test('durable source events preserve versions, converge out of order and notify only authorized subscribers',async()=>{
  await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/source-events-')),resourceWorker:false}),app=await createServer(host);
  try{
@@ -17,4 +18,12 @@ test('durable source events preserve versions, converge out of order and notify 
   const removed=await app.inject({url:'/v1/resources/'+row.id+'/state',method:'PUT',headers:admin,payload:{revision:newer.revision,active:false}});expect(removed.statusCode).toBe(200);await host.resourceIndex.process();expect((await host.db.pool.query('SELECT active FROM resource_search_index WHERE resource_id=$1',[row.id])).rows[0].active).toBe(false);expect((await host.db.pool.query('SELECT count(*)::int AS n FROM resource_versions WHERE resource_id=$1',[row.id])).rows[0].n).toBe(2);
   const after=await app.inject({url:'/v1/agents/alice-job/resource-notifications',headers});expect(after.body).not.toContain('Reviewed guidance');expect(after.json().items.every((n:any)=>n.visibility==='unavailable')).toBe(true);
  }finally{await app.close();await host.close();}
+});
+
+test('an execute subscription survives consumption before assistant startup and routes exactly once after restart',async()=>{
+ await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/subscription-restart-'));let host=await createFramework({root,resourceWorker:false}),app:any,queue:any;
+ try{await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'admin',role:'admin',companyId:'one',permissions:[]});await host.putActor({id:'alice',role:'employee',companyId:'one',permissions:[]});await host.putAgent({id:'job',ownerId:'alice',companyId:'one',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});await host.events.configure('admin',{name:'Source updates',enabled:true,mode:'execute',semantic:false,subscribeHostEvents:true,allowedPrincipalIds:['alice'],targets:[{agentId:'job',eventTypes:['knowledge.source_changed'],description:'Recheck only the changed subscribed source'}]});
+ const source=await host.resources.create('admin',{title:'Shared source',domain:'guides',kind:'document',body:'Version one',access:{scope:'company',readerIds:[]},idempotencyKey:'source'});await host.resourceIndex.subscribe('admin','job',{resourceId:source.id,mode:'execute'});await host.resources.update('admin',source.id,{revision:source.revision,body:'Version two'});expect(host.assistant).toBeUndefined();await host.resourceIndex.process();expect((await host.db.pool.query("SELECT count(*)::int AS n FROM assistant_events WHERE source='framework:resources'")).rows[0].n).toBe(1);await host.close();
+ host=await createFramework({root,resourceWorker:false});app=await createServer(host);queue=new TaskQueue(host,{async run(){return{id:randomUUID(),state:'succeeded',output:'Checked current source'};}});await queue.open();queue.registerRoutes(app);await host.events.runOnce();await host.events.runOnce();expect((await host.db.pool.query('SELECT count(*)::int AS n FROM work_items')).rows[0].n).toBe(1);expect((await host.db.pool.query('SELECT count(*)::int AS n FROM assistant_rules')).rows[0].n).toBe(0);
+ }finally{await queue?.close();await app?.close();await host.close();}
 });

@@ -21,6 +21,8 @@ export interface TaskRequest {
     workRound?:number;
     workInputId?:string;
     workControlRevision?:number;
+    contextWorkId?:string;
+    executionProfile?:'memory-maintenance';
 }
 export interface TaskExecutor {
     assessEvent?(input: import('./event-routing.js').EventAssessment): Promise<import('./event-routing.js').EventDecision>;
@@ -42,7 +44,7 @@ export class TaskQueue {
         if (!request.prompt?.trim() || request.prompt.length > 8000 || !request.idempotencyKey || request.idempotencyKey.length > 160) fail('INVALID_INPUT', 'Invalid task');
         const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
         const key = hash([request.principalId, request.agentId, request.idempotencyKey]);
-        const inputHash = hash(request.workId ? [request.prompt, request.parentTaskId ?? null, request.workId] : [request.prompt, request.parentTaskId ?? null]);
+        const inputHash = hash(request.contextWorkId||request.executionProfile?[request.prompt,request.parentTaskId??null,request.workId??null,request.contextWorkId??null,request.executionProfile??null]:request.workId ? [request.prompt, request.parentTaskId ?? null, request.workId] : [request.prompt, request.parentTaskId ?? null]);
         const prior = (await client.query('SELECT * FROM tasks WHERE request_key=$1', [key])).rows[0];
         if (prior) { if (prior.input_hash !== inputHash) fail('CONFLICT', 'Task key reused with changed input'); return prior.id as string; }
         if (request.parentTaskId) {
@@ -53,7 +55,7 @@ export class TaskQueue {
             if (count >= 2) fail('BUDGET_EXCEEDED', 'Parent already has two child tasks');
         }
         const id = randomUUID();
-        const data = { resultFormat:'references-v1',prompt: request.prompt, idempotencyKey: 'task:' + id, executionPrincipalId: agent.ownerId, ...(request.workId ? { workId: request.workId, budgetGroupId: request.budgetGroupId ?? request.workId,workRound:request.workRound,workInputId:request.workInputId,workControlRevision:request.workControlRevision } : {}) };
+        const data = { resultFormat:'references-v1',prompt: request.prompt, idempotencyKey: 'task:' + id, executionPrincipalId: agent.ownerId,contextWorkId:request.contextWorkId,executionProfile:request.executionProfile, ...(request.workId ? { workId: request.workId, budgetGroupId: request.budgetGroupId ?? request.workId,workRound:request.workRound,workInputId:request.workInputId,workControlRevision:request.workControlRevision } : {}) };
         await client.query('INSERT INTO tasks(id,agent_id,principal_id,state,request_key,input_hash,data,parent_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [id, agent.id, request.principalId, 'queued', key, inputHash, JSON.stringify(data), request.parentTaskId ?? null]);
         const jobId = await this.boss.send('agent-task', { taskId: id }, { id, group: { id: agent.id }, retryLimit: 0, db: { executeSql: (sql, values) => client.query(sql, values) } });
         if (!jobId) fail('CONFLICT', 'Task job was not accepted');
@@ -78,7 +80,7 @@ export class TaskQueue {
                 if (!row)
                     continue;
                 try {
-                    const result = await this.executeAdmitted({ principalId: row.data.executionPrincipalId, initiatingPrincipalId: row.principal_id, agentId: row.agent_id, prompt: row.data.prompt, idempotencyKey: row.data.idempotencyKey, taskId: row.id, workId: row.data.workId,workRound:row.data.workRound,workInputId:row.data.workInputId,workControlRevision:row.data.workControlRevision, budgetGroupId: row.data.budgetGroupId ?? row.parent_id ?? row.id });
+                    const result = await this.executeAdmitted({ principalId: row.data.executionPrincipalId, initiatingPrincipalId: row.principal_id, agentId: row.agent_id, prompt: row.data.prompt, idempotencyKey: row.data.idempotencyKey, taskId: row.id, workId: row.data.workId,workRound:row.data.workRound,workInputId:row.data.workInputId,workControlRevision:row.data.workControlRevision,contextWorkId:row.data.contextWorkId,executionProfile:row.data.executionProfile, budgetGroupId: row.data.budgetGroupId ?? row.parent_id ?? row.id });
                     await this.host.db.pool.query("UPDATE tasks SET data=data||$2::jsonb WHERE id=$1 AND state='running'", [row.id, JSON.stringify({ resultFormat:'references-v1',runId: result.id, output: result.output ?? '' })]);
                     await this.host.results.capture(row, result);
                     await this.host.db.pool.query("UPDATE tasks SET state=$2,data=data||$3::jsonb,updated_at=now() WHERE id=$1 AND state='running'", [row.id, result.state, JSON.stringify({ runId: result.id, output: result.output ?? '' })]);

@@ -86,7 +86,7 @@ export class Framework {
         this.results = new WorkResults(this);
         this.market = new CapabilityMarket(this);
         this.events = new EventRouting(this);
-        this.memory = new MemoryStore(options.root, this.db, (p,a,action)=>this.authorizeMemory(p,a,action));
+        this.memory = new MemoryStore(this);
     }
     async authorizeMemory(principalId:string,agentId:string,action:'read'|'execute',client?:Pick<PoolClient,'query'>){
         const scope=await this.authorize(principalId,agentId,action,client);
@@ -271,7 +271,7 @@ export class Framework {
         return actor;
     }
     async revokeAccessToken(token: string) { await this.db.pool.query('DELETE FROM access_tokens WHERE hash=$1', [createHash('sha256').update(token).digest('hex')]); }
-    async writeMemory(request: MemoryWrite) { return this.memory.write(request); }
+    async writeMemory(request: MemoryWrite,derivation?:import('./provenance.js').SourceOrigin[]) { return this.memory.write(request,derivation); }
     async readMemory(request: MemoryRequest) { return this.memory.read(request); }
     async buildContext(request: ContextRequest) { return this.memory.context(request); }
     async listLogs(request: {
@@ -283,7 +283,7 @@ export class Framework {
         const limit = request.limit ?? 100;
         if (!Number.isInteger(limit) || limit < 1 || limit > 500)
             fail('INVALID_INPUT', 'Invalid log limit');
-        return (await this.db.pool.query("SELECT id,type,data,created_at FROM audit WHERE data->>'agentId'=$1 AND (type<>'report.recorded' OR data->>'principalId'=$3) ORDER BY seq DESC LIMIT $2", [request.agentId, limit,request.principalId])).rows;
+        return (await this.db.pool.query("SELECT id,type,data,created_at FROM audit WHERE data->>'agentId'=$1 AND ((type NOT IN ('report.recorded','work.result_recorded','work.memory_saved') AND type NOT LIKE 'memory.%' AND type NOT LIKE 'resource.%') OR data->>'principalId'=$3) ORDER BY seq DESC LIMIT $2", [request.agentId, limit,request.principalId])).rows;
     }
     async recordReport(request: {
         principalId: string;
@@ -327,7 +327,7 @@ export class Framework {
         if (method === 'memory.read')
             return this.readMemory({ ...bound, noteId: params.ref?.noteId });
         if (method === 'memory.write')
-            return this.writeMemory({ ...params.entry, ...bound });
+            return this.writeMemory({ ...params.entry, ...bound },request.runId?await this.provenance.snapshot(request.runId):undefined);
         if (method === 'report.record')
             return this.recordReport({ ...bound, runId: request.runId, summary: params.record?.summary });
         const source = { sourceAgentId: agent.id, sourceToolRef: request.toolRef, sourcePluginVersion: plugin.version };
@@ -511,4 +511,4 @@ export class Framework {
         await this.db.close();
     }
 }
-export async function createFramework(options: FrameworkOptions) { const framework = new Framework(options); await framework.presets.open(options.presetDirectories); await framework.registry.open(); await framework.db.open(); await framework.channels.open(); await framework.resources.open(); await framework.provenance.open(); await framework.workMemory.open(); await framework.knowledge.open(); await framework.results.open(); await framework.market.open();await framework.experiences.open(); await framework.events.open();await framework.resourceIndex.open();if(options.resourceWorker!==false)framework.resourceIndex.start(); return framework; }
+export async function createFramework(options: FrameworkOptions) { const framework = new Framework(options); await framework.presets.open(options.presetDirectories); await framework.registry.open(); await framework.db.open(); await framework.channels.open(); await framework.resources.open(); await framework.provenance.open(); await framework.memory.open(); await framework.workMemory.open(); await framework.knowledge.open(); await framework.results.open(); await framework.market.open();await framework.experiences.open(); await framework.events.open();await framework.resourceIndex.open();if(options.resourceWorker!==false)framework.resourceIndex.start(); return framework; }

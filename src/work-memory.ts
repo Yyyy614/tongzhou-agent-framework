@@ -44,22 +44,23 @@ export class WorkMemory {
         const note:WorkNote=allowed&&row?row.data:{goal:work.data.title,decisions:[],blockers:[],nextSteps:[],artifacts:[]};
         return{workId,agentId,title:work.data.title,facts,revision:row?.revision??0,note,visibility:allowed?'private-work-memory':'sources-unavailable',sourceAuthority:sourceStatus.fingerprint,derivedValidity:sourceStatus.current?'current':'source-changed',resultRefs,...(row?{memoryRef:{id:row.id,revision:row.revision},updatedAt:row.created_at}:{}),origin:'agent-reported'};
     }
-    async save(principalId:string,workId:string,agentId:string,input:WorkNoteWrite,derivation?:SourceOrigin[]){
+    async save(principalId:string,workId:string,agentId:string,input:WorkNoteWrite,derivation?:SourceOrigin[],rebuild=false){
         if(!this.host.registry.ajv.validate(workNoteSchema,input)||JSON.stringify(input).length>16000)fail('INVALID_INPUT','Invalid bounded work note');
         const client=await this.host.db.pool.connect();
         try{await client.query('BEGIN');await this.host.organization.lock(client);const {actor,agent,own}=await this.authorize(principalId,workId,agentId,client);
             if(!own)fail('PERMISSION_DENIED','Only the execution owner edits private work notes');
             await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',[workId+':'+agentId+':'+actor.id]);
-            const key=contentHash([actor.companyId,workId,agentId,actor.id,input.idempotencyKey]),hash=contentHash(input);
+            const key=contentHash([actor.companyId,workId,agentId,actor.id,input.idempotencyKey]),hash=contentHash(rebuild?{input,mode:'rebuild'}:input);
             const prior=(await client.query('SELECT input_hash FROM work_memory_versions WHERE request_key=$1',[key])).rows[0];
             if(prior){if(prior.input_hash!==hash)fail('CONFLICT','Work note retry changed');await client.query('COMMIT');return this.read(principalId,workId,agentId);}
             const previous=await this.latest(workId,agentId,actor.id,client);
             if((previous?.revision??0)!==input.expectedRevision)fail('CONFLICT','Work note changed; reload before saving');
+            if(rebuild){if(!previous||!derivation?.length||derivation.some(s=>s.kind==='work-memory'&&s.id===workId&&s.agentId===agentId))fail('PERMISSION_DENIED','Rebuild requires a fresh context without the old note');if((await this.host.provenance.status(actor.id,previous.dependencies,client)).current)fail('CONFLICT','Current work notes should be edited normally');}
             const sourceRefs=[...input.artifacts,...input.decisions.flatMap(i=>i.refs),...input.blockers.flatMap(i=>i.refs),...input.nextSteps.flatMap(i=>i.refs)];
-            const sources:SourceOrigin[]=[...(previous?.dependencies??[]),...(derivation??[]),{kind:'input',id:'work-note:'+key,ownerId:actor.id,companyId:actor.companyId}];
+            const sources:SourceOrigin[]=[...(rebuild?[]:previous?.dependencies??[]),...(derivation??[]),{kind:'input',id:'work-note:'+key,ownerId:actor.id,companyId:actor.companyId}];
             for(const ref of sourceRefs){const source=await this.host.resources.originStatus(actor.id,{kind:'resource',...ref},client);if(!source.visible)fail('NOT_FOUND','Work note reference is unavailable');sources.push(...await this.host.provenance.resourceOrigins({...ref,revision:source.revision},client));}
             const dependencies=this.host.provenance.unique(sources);if(dependencies.length>512)fail('CONTEXT_BUDGET_EXCEEDED','Work note source limit reached');
-            if(!(await this.host.provenance.status(actor.id,dependencies,client)).visible)fail('NOT_FOUND','Work note source is unavailable');
+            const status=await this.host.provenance.status(actor.id,dependencies,client);if(!status.visible)fail('NOT_FOUND','Work note source is unavailable');if(rebuild&&!status.current)fail('CONFLICT','Rebuild requires current authorized evidence');
             const {expectedRevision,idempotencyKey,...note}=input,revision=expectedRevision+1;
             await client.query('INSERT INTO work_memory_versions(id,company_id,work_id,principal_id,agent_id,revision,data,dependencies,request_key,input_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[randomUUID(),actor.companyId,workId,actor.id,agent.id,revision,JSON.stringify(note),JSON.stringify(dependencies),key,hash]);
             await client.query('INSERT INTO audit(id,type,data) VALUES($1,$2,$3)',[randomUUID(),'work.memory_saved',JSON.stringify({companyId:actor.companyId,principalId:actor.id,agentId:agent.id,workId,revision})]);
@@ -111,6 +112,9 @@ export class WorkMemory {
         const artifacts=[processRef,...current.note.artifacts].filter((r,i,all)=>all.findIndex(a=>a.id===r.id&&a.version===r.version)===i).slice(0,16);
         try{await this.save(owner,workId,agentId,{...current.note,artifacts,expectedRevision:current.revision!,idempotencyKey:'result:'+runId},sources);}catch(error){if(!['CONFLICT','NOT_FOUND'].includes((error as any).code))throw error;await this.host.db.audit('work.memory_update_deferred',{principalId:owner,agentId,workId,runId});}
     }
+    async requestRebuild(principalId:string,workId:string,agentId:string,input:{expectedRevision:number;idempotencyKey:string}){const{actor,own,work}=await this.authorize(principalId,workId,agentId);if(!own)fail('PERMISSION_DENIED','Only the execution owner can rebuild private notes');const current=await this.read(actor.id,workId,agentId);if(current.revision!==input.expectedRevision||current.derivedValidity==='current')fail('CONFLICT','Work note changed or is already current');if(work.control_mode!=='active')fail('CONFLICT','请先明确恢复工作，再重建笔记。');if(!this.host.coordination)fail('UNAVAILABLE','Task service unavailable');const previous=await this.latest(workId,agentId,actor.id),refs:ResourceRef[]=[];for(const origin of previous?.dependencies??[])if(refs.length<16&&origin.kind==='resource'&&!refs.some(r=>r.id===origin.id)){try{const r=await this.host.resources.read(actor.id,origin.id,undefined,0,1);if(r.freshness==='current'&&r.derivedValidity==='current')refs.push(r.resourceRef);}catch(e){if(!['NOT_FOUND','PERMISSION_DENIED'].includes((e as any).code))throw e;}}
+        return this.host.coordination.queue.submit({principalId:actor.id,agentId,prompt:'基于当前有效证据重新整理这项工作的私人笔记。旧笔记未进入上下文，不要猜测旧内容。先读取下面仍可访问的新版来源或用 resource_recall 检索当前资料，再调用 work_memory_rebuild。保持目标清晰，只写有依据的决定、阻塞与下一步；缺资料时明确记为阻塞，不改变宿主执行/审批事实。expectedRevision='+input.expectedRevision+'；可核实的来源='+JSON.stringify(refs),idempotencyKey:'work-note-rebuild:'+workId+':'+input.idempotencyKey,contextWorkId:workId,executionProfile:'memory-maintenance'});
+    }
     async resolve(principalId:string,agentId:string,input:{entryKey?:string;workId?:string;continueWork:boolean}){
         const {actor,agent}=await this.host.authorize(principalId,agentId);if(agent.ownerId!==actor.id)fail('PERMISSION_DENIED','Work resolution belongs to the executor');
         if(input.workId){await this.authorize(actor.id,input.workId,agent.id);if(input.entryKey)await this.bind(actor.id,agent.id,input.entryKey,input.workId);return{status:'resolved' as const,workId:input.workId};}
@@ -124,6 +128,7 @@ export class WorkMemory {
     registerRoutes(app:FastifyInstance){
         app.get<{Params:{id:string;agentId:string}}>('/v1/work/:id/memory/:agentId',async req=>this.read((await authenticateRequest(this.host,req)).id,req.params.id,req.params.agentId));
         app.put<{Params:{id:string;agentId:string}}>('/v1/work/:id/memory/:agentId',{schema:{body:workNoteSchema}},async req=>this.save((await authenticateRequest(this.host,req)).id,req.params.id,req.params.agentId,req.body as WorkNoteWrite));
+        app.post<{Params:{id:string;agentId:string}}>('/v1/work/:id/memory/:agentId/rebuild-request',{schema:{body:{type:'object',additionalProperties:false,required:['expectedRevision','idempotencyKey'],properties:{expectedRevision:{type:'integer',minimum:0},idempotencyKey:{type:'string',minLength:1,maxLength:100}}}}},async(req,reply)=>reply.code(202).send(await this.requestRebuild((await authenticateRequest(this.host,req)).id,req.params.id,req.params.agentId,req.body as any)));
         app.post<{Params:{agentId:string}}>('/v1/agents/:agentId/work-context',{schema:{body:{type:'object',additionalProperties:false,required:['continueWork'],properties:{continueWork:{type:'boolean'},entryKey:{type:'string',maxLength:200},workId:{type:'string',format:'uuid'}}}}},async req=>this.resolve((await authenticateRequest(this.host,req)).id,req.params.agentId,req.body as any));
     }
 }

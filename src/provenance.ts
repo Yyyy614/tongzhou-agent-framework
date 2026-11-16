@@ -40,16 +40,16 @@ export class SourceProvenance {
         const inherited=version.dependencies??(version.source_refs.some((s:string)=>/^(?:run|task):/u.test(s))?[{kind:'unknown',id:value.id,ownerId:version.created_by}]:[]);
         return [{kind:'resource',id:value.id,version:value.version,revision:value.revision},...inherited];
     }
-    async status(principalId:string,sources:SourceOrigin[]|null|undefined,client:Query=this.host.db.pool){
+    async status(principalId:string,sources:SourceOrigin[]|null|undefined,client:Query=this.host.db.pool,path:Set<string>=new Set()):Promise<{visible:boolean;current:boolean;fingerprint:string|null}>{
         if(!sources)return{visible:false,current:false,fingerprint:null};
         const actor=await this.host.db.get<Actor>('actors',principalId,client);if(!actor.active)return{visible:false,current:false,fingerprint:null};
         let current=true;const stamps:unknown[]=[];
         for(const source of sources){
             if(source.kind==='resource'){
                 const status=await this.host.resources.originStatus(actor.id,source,client);
-                if(!status.visible)return{visible:false,current:false,fingerprint:null};current&&=status.current;stamps.push([source.id,status.revision]);
+                if(!status.visible)return{visible:false,current:false,fingerprint:null};current&&=status.current;stamps.push([source.id,status.revision,status.current]);
             }else if(source.kind==='memory'){
-                try{const scope=await this.host.authorizeMemory(actor.id,source.agentId!,'read',client),note=(await client.query('SELECT version FROM memories WHERE agent_id=$1 AND note_id=$2',[source.agentId,source.id])).rows[0];if(!note)return{visible:false,current:false,fingerprint:null};current&&=note.version===source.version;stamps.push([source.agentId,source.id,note.version,contentHash(scope.actor),contentHash(scope.agent)]);}
+                try{const scope=await this.host.authorizeMemory(actor.id,source.agentId!,'read',client),note=(await client.query('SELECT version FROM memories WHERE agent_id=$1 AND note_id=$2',[source.agentId,source.id])).rows[0],version=(await client.query('SELECT principal_id,dependencies FROM memory_versions WHERE agent_id=$1 AND note_id=$2 AND version=$3',[source.agentId,source.id,source.version])).rows[0];if(!note||!version||version.principal_id!==scope.agent.ownerId||source.ownerId&&source.ownerId!==version.principal_id)return{visible:false,current:false,fingerprint:null};const key=source.agentId+':'+source.id+':'+source.version;if(path.has(key)||path.size>64)return{visible:false,current:false,fingerprint:null};const nested=await this.status(actor.id,version.dependencies,client,new Set([...path,key]));if(!nested.visible)return{visible:false,current:false,fingerprint:null};current&&=note.version===source.version&&nested.current;stamps.push([source.agentId,source.id,note.version,nested.fingerprint,nested.current,contentHash(scope.actor),contentHash(scope.agent)]);}
                 catch(error){if(['PERMISSION_DENIED','NOT_FOUND'].includes((error as any).code))return{visible:false,current:false,fingerprint:null};throw error;}
             }else if(source.kind==='work-memory'){
                 const status=await this.host.workMemory.originStatus(actor.id,source,client);if(!status.visible)return{visible:false,current:false,fingerprint:null};stamps.push([source.id,source.agentId,status.authority]);

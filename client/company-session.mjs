@@ -185,14 +185,14 @@ export async function createCompanySession({ serverURL, dataDir, protection, run
                 if(kind==='market-submissions')return request('/v1/market/submissions');
                 if(kind==='market-submit')return request('/v1/market/submissions','POST',input,token,60000);
                 if(kind==='resource-index')return request('/v1/resources?query='+encodeURIComponent(input?.query??'')+(input?.domain?'&domain='+encodeURIComponent(input.domain):''));
-                if(kind==='resource-read')return request('/v1/resources/'+id+'?offset='+Number(input?.offset??0)+(input?.version?'&version='+Number(input.version):''));
+                if(kind==='resource-read')return request('/v1/resources/'+id+'?offset='+Number(input?.offset??0)+(input?.version?'&version='+Number(input.version):'')+(input?.limit?'&limit='+Number(input.limit):''));
                 if(kind==='resource-create')return request('/v1/resources','POST',input);
                 if(kind==='resource-access')return request('/v1/resources/'+id+'/access','PUT',input);
                 if(kind==='task-result')return request('/v1/tasks/'+id+'/result');
                 if(kind==='experience-list')return request('/v1/experiences');
                 if(kind==='experience-validate')return request('/v1/experiences/'+id+'/validate','POST',input);
                 if(kind==='experience-submit')return request('/v1/experiences/'+id+'/submit','POST',input);
-                if(['context-latest','context-history','context-read','context-usage','work-memory-read','work-memory-save','resource-notifications','resource-subscribe','resource-recall','experience-create','memory-domains'].includes(kind)){
+                if(['context-latest','context-history','context-read','context-usage','work-memory-read','work-memory-save','work-memory-rebuild','resource-notifications','resource-subscribe','resource-recall','experience-create','memory-domains'].includes(kind)){
                     if(!active?.started||active.released)throw failure('JOB_REQUIRED','请先进入自己的工作岗位');const agentId=active.lease.agentId;
                     if(kind==='memory-domains')return request('/v1/memory-domains');
                     if(kind==='context-latest')return request('/v1/agents/'+agentId+'/context-latest');
@@ -201,6 +201,7 @@ export async function createCompanySession({ serverURL, dataDir, protection, run
                     if(kind==='context-usage')return request('/v1/agents/'+agentId+'/context-usage');
                     if(kind==='work-memory-read')return request('/v1/work/'+id+'/memory/'+agentId);
                     if(kind==='work-memory-save')return request('/v1/work/'+id+'/memory/'+agentId,'PUT',input);
+                    if(kind==='work-memory-rebuild')return request('/v1/work/'+id+'/memory/'+agentId+'/rebuild-request','POST',input);
                     if(kind==='resource-notifications')return request('/v1/agents/'+agentId+'/resource-notifications');
                     if(kind==='resource-subscribe')return request('/v1/agents/'+agentId+'/resource-subscriptions','POST',{resourceId:id,mode:'notify'});
                     if(kind==='resource-recall')return request('/v1/agents/'+agentId+'/recall','POST',input);

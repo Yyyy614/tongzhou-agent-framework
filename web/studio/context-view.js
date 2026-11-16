@@ -1,9 +1,10 @@
+import{openVerifiedResource}from'./source-preview.js';
 import{api}from'./api.js';
 import{h,button,field,select,modal,heading,panel,table,badge,date,liveRefresh,toast,empty,metric}from'./ui.js';
 const coverageName={complete:'已检索选定范围',partial:'仍有覆盖缺口','no-match':'没有匹配资料',restricted:'部分来源受权限保护','not-requested':'本轮未检索'};
 const reasons={'excerpt-only':'仅采用片段，可继续展开','read-budget':'读取次数到达上限','character-budget':'片段预算不足','domain-budget':'仍有资料域未检索','depth-budget':'展开深度到达上限','source-changed':'来源已更新','source-unavailable':'来源暂不可用','unavailable-reference':'当前不可读取该引用','candidate-page':'候选资料还有下一页','source-changed-or-unavailable':'工作笔记来源已变化，未自动采用'};
 const attempt=fn=>async()=>{try{await fn();}catch(e){toast(e.message,'danger');}};
-async function readSource(ref){const value=await api('/v1/resources/'+ref.id+'?version='+ref.version),content=h('div',{},h('p',{class:'muted'},'版本 '+value.version+' · '+(value.freshness==='current'?'当前有效':'历史或已过期')),h('pre',{class:'context-prose'},value.body));let offset=value.nextOffset;const more=button('继续读取',attempt(async()=>{const next=await api('/v1/resources/'+ref.id+'?version='+ref.version+'&offset='+offset);content.insertBefore(h('pre',{class:'context-prose'},next.body),more);offset=next.nextOffset;more.hidden=offset===null;}));more.hidden=offset===null;content.append(more);modal(value.title,'正文按当前权限读取；索引和摘要不授予访问权。',content,null,{wide:true});}
+async function readSource(ref){return openVerifiedResource(ref);}
 export async function contextView(ctx){
  const saved=ctx.state.context??{},first=ctx.agents.find(a=>a.id===saved.agentId)??ctx.agents[0];let employeeId=first?.ownerId??'',agentId=first?.id??'',requestId='';const content=h('div'),employee=select(ctx.employees.map(e=>({value:e.id,label:e.displayName??e.id})),employeeId),job=select([],agentId),requests=select([{value:'',label:'最新一轮 · 自动更新'}],'');
  function save(){ctx.state.context={agentId};ctx.persistState?.();}

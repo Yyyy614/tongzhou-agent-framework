@@ -141,7 +141,8 @@ export class WorkAssistant {
             try {
                 const actor = (await client.query('SELECT data FROM actors WHERE id=$1', [event.created_by])).rows[0]?.data as Actor | undefined;
                 if (!actor?.active || actor.companyId !== event.company_id) fail('PERMISSION_DENIED', 'Event producer is no longer authorized');
-                if(event.source!=='framework:work')await this.requireCapability(actor.id,'event.self.publish',client,event.data);
+                if(event.source==='framework:resources')await this.host.resourceIndex.authorizeEvent(actor.id,event,client);
+                else if(event.source!=='framework:work')await this.requireCapability(actor.id,'event.self.publish',client,event.data);
                 const scope = await this.host.organization.authorizeAgent(actor.id, event.agent_id, 'dispatch', client);
                 if (actor.role !== 'admin' && scope.agent.ownerId !== actor.id) fail('PERMISSION_DENIED', 'Event source Agent changed ownership');
                 const rules = (await client.query("SELECT * FROM assistant_rules WHERE company_id=$1 AND data->>'eventType'=$2 AND data->>'enabled'='true' AND (data->'sourcePrincipalIds') ? $3 ORDER BY id LIMIT 8", [event.company_id, event.type, actor.id])).rows;

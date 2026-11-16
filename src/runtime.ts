@@ -32,6 +32,7 @@ export interface RuntimeOptions {
     maxConcurrentRuns?: number;
 }
 interface RunRequest {
+    executionProfile?:'memory-maintenance';
     contextResources?: ResourceRef[];
     contextWorkId?: string;
     contextWorkCleared?: boolean;
@@ -158,19 +159,21 @@ export class HarnessRuntime {
                     await scope.context?.validate();
                     const { actor, agent } = await this.host.authorize(scope.request.principalId, scope.request.agentId);
                     this.assertOpen(scope);
-                    const permission = ({ memory_read: 'memory.self.read', memory_search: 'memory.self.read', memory_write: 'memory.self.propose_write', report_record: 'report.self.write',work_report:'report.self.write' } as Record<string, string>)[tool.name];
+                    const permission = ({ memory_read: 'memory.self.read', memory_search: 'memory.self.read', memory_write: 'memory.self.propose_write',memory_rebuild:'memory.self.propose_write', report_record: 'report.self.write',work_report:'report.self.write' } as Record<string, string>)[tool.name];
                     if (permission && (!agent.servicePermissions?.includes(permission) || !await this.host.hasPermission(actor,agent,permission) || !this.host.bindings(agent).some(b => this.host.registry.get(b.pluginId, b.pluginVersion).manifest.permissions.includes(permission))))
                         fail('PERMISSION_DENIED', 'Service grant was revoked');
                     if(tool.companyRef){const plugin=this.host.pluginFor(agent,tool.companyRef);if(plugin.version!==tool.pluginVersion||!agent.allowedTools.includes(tool.companyRef)||!await this.host.hasPermission(actor,agent,'tool.invoke:'+tool.companyRef,tool.companyRef))fail('PERMISSION_DENIED','Tool binding changed before action or receipt access');await this.host.market.guardTool(actor,agent,tool.companyRef);}
                     if (!this.host.registry.ajv.validate(tool.inputSchema, rpc.params?.arguments ?? {}))
                         fail('INVALID_INPUT', 'MCP tool arguments failed schema validation');
                     try {
-                        scope.context?.beginRead(tool.name,rpc.params?.arguments??{});
+                        await scope.context?.attestToolInput(tool.name,rpc.params?.arguments??{});
+                        const readKind=tool.companyRef&&tool.effect==='read'?'plugin_read':tool.name;
+                        scope.context?.beginRead(readKind,rpc.params?.arguments??{});
                         const invoke=()=>tool.execute(rpc.params?.arguments??{},scope.id+':mcp:'+String(rpc.id));
                         const effect=scope.request.workId&&tool.effect&&tool.effect!=='read'&&this.host.coordination;
                         const execution=effect?await this.host.coordination!.control.actions.execute(scope.request,(tool.companyRef??tool.name)+'@'+(tool.pluginVersion??'host-1'),rpc.params?.arguments??{},invoke,scope.id):{value:await invoke(),reused:false,actionId:null};
                         const output=execution.value;
-                        scope.context?.completeRead(tool.name,rpc.params?.arguments??{},output);
+                        scope.context?.completeRead(readKind,rpc.params?.arguments??{},output);
                         if (tool.name === 'memory_read') {
                             const note = output as {
                                 noteId: string;
@@ -183,9 +186,9 @@ export class HarnessRuntime {
                         if(tool.name==='resource_index')for(const item of (output as any).items)await scope.context?.resource(item,true);
                         if(tool.name==='resource_recall')for(const item of (output as any).fragments)await scope.context?.resource(await this.host.resources.read(actor.id,item.ref.id,item.ref.version,0,1));
                         if(tool.name==='skill_read'&&(output as any)?.resource)await scope.context?.resource((output as any).resource);
-                        const written=tool.name==='memory_write'?output:tool.companyRef&&tool.effect==='host'?(output as any)?.output:null;
+                        const written=['memory_write','memory_rebuild'].includes(tool.name)?output:tool.companyRef&&tool.effect==='host'?(output as any)?.output:null;
                         if(written&&typeof (written as any).noteId==='string'&&Number.isInteger((written as any).version))await scope.context?.wroteMemory(written);
-                        if(tool.name==='work_memory_save')await scope.context?.wroteWorkMemory();
+                        if(['work_memory_save','work_memory_rebuild'].includes(tool.name))await scope.context?.wroteWorkMemory();
                         await this.host.db.audit(execution.reused?'runtime.tool_reused':'runtime.tool_succeeded', { principalId: scope.request.principalId, agentId: scope.request.agentId, runId: scope.id, toolName: tool.name, requestRef: String(rpc.id),actionId:execution.actionId, noteRef: tool.name === 'memory_read' ? { noteId: (output as any).noteId, version: (output as any).version } : undefined });
                         result = { content: [{ type: 'text', text: JSON.stringify(output) },...(execution.reused?[{type:'text',text:JSON.stringify({companyExecution:{reused:true,actionRef:execution.actionId}})}]:[])], isError: false };
                     }
@@ -343,24 +346,27 @@ export class HarnessRuntime {
         }
         const grant = async (p: string) => plugins.some(plugin => plugin.manifest.permissions.includes(p)) && agent.servicePermissions?.includes(p) && await this.host.hasPermission(actor,agent,p);
         if (await grant('memory.self.read')) {
-            tools.push({ name: 'memory_read', description: 'Read one private note. Follow links only as needed.', inputSchema: { type: 'object', additionalProperties: false, required: ['noteId'], properties: { noteId: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$' } } }, execute: async (input) => {
-                    if (Object.keys(input).some(k => k !== 'noteId'))
+            tools.push({ name: 'memory_read', description: 'Read one bounded private note page with current source permissions. Follow nextOffset only as needed.', inputSchema: { type: 'object', additionalProperties: false, required: ['noteId'], properties: { noteId: { type: 'string', pattern: '^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$' },offset:{type:'integer',minimum:0} } }, execute: async (input) => {
+                    if (Object.keys(input).some(k => !['noteId','offset'].includes(k)))
                         fail('INVALID_INPUT', 'Unexpected memory parameter');
-                    return this.host.readMemory({ ...bound, noteId: input.noteId });
+                    return this.host.memory.page({ ...bound, noteId: input.noteId },input.offset??0,this.scopes.get(runId)?.context?.readAllowance()??4000);
                 } });
             tools.push({ name: 'memory_search', description: 'Find note references and short excerpts in your own memory.', inputSchema: { type: 'object', additionalProperties: false, required: ['query'], properties: { query: { type: 'string', maxLength: 200 } } }, execute: input => this.host.memory.search({ ...bound, query: input.query }) });
         }
-        if (await grant('memory.self.propose_write'))
-            tools.push({ name: 'memory_write',effect:'host', description: 'Update your private notes using the version you read. Never grant permissions through notes.', inputSchema: { type: 'object', additionalProperties: false, required: ['noteId', 'markdown', 'expectedVersion', 'sourceRefs'], properties: { noteId: { type: 'string' }, markdown: { type: 'string', maxLength: 32000 }, expectedVersion: { type: 'integer', minimum: 0 }, sourceRefs: { type: 'array', items: { type: 'string' } } } }, execute: input => this.host.writeMemory({ ...input, ...bound }) });
+        if (await grant('memory.self.propose_write')){
+            tools.push({ name: 'memory_write',effect:'host', description: 'Update your private notes using the version you read. Never grant permissions through notes.', inputSchema: { type: 'object', additionalProperties: false, required: ['noteId', 'markdown', 'expectedVersion', 'sourceRefs'], properties: { noteId: { type: 'string' }, markdown: { type: 'string', maxLength: 32000 }, expectedVersion: { type: 'integer', minimum: 0 }, sourceRefs: { type: 'array', items: { type: 'string' } } } }, execute: async input => this.host.writeMemory({ ...input, ...bound },await this.host.provenance.snapshot(runId)) });
+            tools.push({name:'memory_rebuild',effect:'host',description:'Rebuild an invalid private note from a fresh context and current evidence. The old note must not have entered this run. Old versions remain archived; this does not publish anything.',inputSchema:{type:'object',additionalProperties:false,required:['noteId','markdown','expectedVersion','sourceRefs'],properties:{noteId:{type:'string',pattern:'^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$'},markdown:{type:'string',maxLength:12000},expectedVersion:{type:'integer',minimum:0},sourceRefs:{type:'array',maxItems:32,items:{type:'string',maxLength:240}}}},execute:async input=>this.host.memory.write({...input,...bound},await this.host.provenance.snapshot(runId),true)});
+        }
         if (await grant('report.self.write')) {
             tools.push({ name: 'report_record',effect:'host', description: 'Record a concise work report for this agent.', inputSchema: { type: 'object', additionalProperties: false, required: ['summary'], properties: { summary: { type: 'string', maxLength: 8000 } } }, execute: input => this.host.recordReport({ ...bound, runId, summary: input.summary }) });
             tools.push({name:'work_report',effect:'host',description:'Record reported facts, versioned evidence, deliverables and unresolved issues. Copy refs ONLY from resource_read.resourceRef or skill_read.resourceRef, never the market release id. This never changes completion/approval state. Uncited claims remain private.',inputSchema:reportSchema,execute:async input=>{const scope=this.scopes.get(runId);if(!scope)fail('UNAUTHENTICATED','No active report scope');for(const ref of [...input.artifacts,...input.facts.flatMap((f:any)=>f.refs),...input.issues.flatMap((i:any)=>typeof i==='string'?[]:i.refs)])await this.host.resources.read(actor.id,ref.id,ref.version);scope.report=input;return{recorded:true,facts:input.facts.length,artifacts:input.artifacts.length};}});
         }
         const currentWork=()=>{const scope=this.scopes.get(runId),workId=scope?.context?.pack.workId??scope?.request.workId??scope?.request.contextWorkId;if(!workId)fail('CONFLICT','先关联一项工作，再读取或保存工作笔记。');return workId as string;};
         tools.push({name:'experience_propose',effect:'host',description:'Save a private candidate lesson with actual input provenance. This does not validate, approve, publish, or change company rules. A human must validate and submit it for independent review.',inputSchema:{type:'object',additionalProperties:false,required:['title','lesson','refs'],properties:{title:{type:'string',minLength:1,maxLength:100},lesson:{type:'string',minLength:1,maxLength:8000},refs:workNoteSchema.properties.artifacts}},execute:async(input,key)=>this.host.experiences.create(actor.id,{...input,agentId:agent.id,...(this.scopes.get(runId)?.context?.pack.workId?{workId:this.scopes.get(runId)?.context?.pack.workId}:{}),idempotencyKey:key},await this.host.provenance.snapshot(runId))});
-        tools.push({name:'work_memory_read',effect:'read',description:'Restore only this work and execution identity: host facts, revisioned notes and result references. Does not resume execution or replay actions.',inputSchema:{type:'object',additionalProperties:false,properties:{}},execute:()=>this.host.workMemory.read(actor.id,currentWork(),agent.id)});
+        tools.push({name:'work_memory_read',effect:'read',description:'Restore bounded current work memory. Default returns compact state and omissions; request a named section and follow nextOffset to expand within the same budget. Stale notes are omitted.',inputSchema:{type:'object',additionalProperties:false,properties:{section:{enum:['decisions','blockers','nextSteps','artifacts']},offset:{type:'integer',minimum:0}}},execute:async input=>{const workId=currentWork(),limit=this.scopes.get(runId)?.context?.readAllowance()??2800;if(!input.section){const c=await this.host.workMemory.compact(actor.id,workId,agent.id,Math.min(2800,limit)),v=JSON.parse(c.text);return{workId,revision:c.ref?.revision??0,note:{goal:v.goal,decisions:v.decisions,blockers:v.blockers,nextSteps:v.nextSteps,artifacts:v.artifacts},facts:v.facts,sourceValidity:v.sourceValidity,omissions:c.omissions,nextOffset:null};}const current=await this.host.workMemory.read(actor.id,workId,agent.id);if(current.derivedValidity!=='current'||current.visibility!=='private-work-memory')return{workId,revision:current.revision,sourceValidity:current.derivedValidity,items:[],nextOffset:null,notice:'旧笔记未采用，请基于新证据重新整理。'};const all=(current.note as any)[input.section],start=input.offset??0,items:any[]=[];for(const item of all.slice(start)){if(JSON.stringify(items.concat(item)).length>limit)break;items.push(item);}return{workId,revision:current.revision,section:input.section,items,offset:start,nextOffset:start+items.length<all.length?start+items.length:null};}});
         const {idempotencyKey:ignoredKey,...noteProperties}=workNoteSchema.properties;
         tools.push({name:'work_memory_save',effect:'host',description:'Save bounded work goals, noted decisions, blockers and next steps using the current note revision. Host status, approvals and action receipts cannot be changed by notes.',inputSchema:{...workNoteSchema,required:workNoteSchema.required.filter(k=>k!=='idempotencyKey'),properties:noteProperties},execute:async(input,key)=>this.host.workMemory.save(actor.id,currentWork(),agent.id,{...input,idempotencyKey:key},await this.host.provenance.snapshot(runId))});
+        tools.push({name:'work_memory_rebuild',effect:'host',description:'Rebuild invalid work notes only from this fresh run and current evidence. Use the expectedRevision supplied by the host or read control state; never recover omitted old text. History remains and host facts cannot change.',inputSchema:{...workNoteSchema,required:workNoteSchema.required.filter(k=>k!=='idempotencyKey'),properties:noteProperties},execute:async(input,key)=>this.host.workMemory.save(actor.id,currentWork(),agent.id,{...input,idempotencyKey:key},await this.host.provenance.snapshot(runId),true)});
         tools.push({name:'resource_recall',effect:'read',description:'Recall authorized excerpts across visible domains and current work references. Explain coverage gaps; continue only within the current read budget.',inputSchema:recallSchema,execute:input=>this.host.knowledge.recall(actor.id,agent.id,{...input,...(this.scopes.get(runId)?.context?.pack.workId?{workId:this.scopes.get(runId)?.context?.pack.workId}:{}),maxChars:Math.max(160,Math.min(input.maxChars??3000,this.scopes.get(runId)?.context?.readAllowance()??3000)),maxReads:Math.min(input.maxReads??4,4,this.scopes.get(runId)?.context?.remainingReads()??4)})});
         tools.push({name:'resource_index',effect:'read',description:'Search authorized metadata with bounded pages. Use resource_recall for excerpts; this is not a complete company inventory.',inputSchema:{type:'object',additionalProperties:false,properties:{query:{type:'string',maxLength:240},domain:{type:'string',maxLength:80},limit:{type:'integer',minimum:1,maximum:16},cursor:{type:'string',maxLength:600}}},execute:input=>this.host.resources.index(actor.id,input.query??'',input.domain,{limit:input.limit??8,cursor:input.cursor})});
         tools.push({name:'resource_read',effect:'read',description:'Expand one versioned resource using current access rights and remaining budget. Follow nextOffset only; pagination depth is bounded.',inputSchema:{type:'object',additionalProperties:false,required:['id','version'],properties:{id:{type:'string',format:'uuid'},version:{type:'integer',minimum:1},offset:{type:'integer',minimum:0}}},execute:input=>this.host.resources.read(actor.id,input.id,input.version,input.offset??0,this.scopes.get(runId)?.context?.readAllowance()??4000)});
@@ -549,6 +555,7 @@ export class HarnessRuntime {
         try {
             await this.host.coordination?.control.guardRun(id);
             scope.tools = await this.tools(actor, agent, id);
+            if(request.executionProfile==='memory-maintenance')scope.tools=scope.tools.filter(t=>['resource_index','resource_read','resource_recall','memory_read','memory_rebuild','work_memory_read','work_memory_rebuild'].includes(t.name));
             await this.host.coordination?.control.guardRun(id);
             if (scope.cancelled)
                 fail('CANCELLED', 'Task cancelled before execution');

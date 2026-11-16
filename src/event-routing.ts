@@ -77,7 +77,8 @@ export class EventRouting {
         if(event.data.hostEventId){
             const original=(await client.query('SELECT * FROM assistant_events WHERE id=$1',[event.data.hostEventId])).rows[0];
             if(!source.data.subscribeHostEvents||!original||original.company_id!==source.company_id||original.created_by!==actor.id||original.data.noAutomation)fail('PERMISSION_DENIED','Host event subscription was revoked');
-            if(original.source!=='framework:work')await this.host.assistant!.requireCapability(actor.id,'event.self.publish',client,original.data);
+            if(original.source==='framework:resources')await this.host.resourceIndex.authorizeEvent(actor.id,original,client);
+            else if(original.source!=='framework:work')await this.host.assistant!.requireCapability(actor.id,'event.self.publish',client,original.data);
             await this.host.organization.authorizeAgent(actor.id,original.agent_id,'dispatch',client);
         }
     }
