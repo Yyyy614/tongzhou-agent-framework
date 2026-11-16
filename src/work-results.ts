@@ -45,7 +45,7 @@ export class WorkResults {
         if (!row) return null;
         const own = row.owner_id === principalId, facts: any[] = [], artifacts: any[] = [], issues: string[] = [];
         const ledger=await this.host.provenance.snapshot(row.run_id,db);
-        const sources=row.dependencies&&ledger?this.host.provenance.unique([...row.dependencies,...ledger]):null;
+        const sources=row.dependencies?.length&&ledger?.length&&!ledger.some(s=>s.kind==='unknown')?this.host.provenance.unique([...row.dependencies,...ledger]):null;
         const dependencies=await this.host.provenance.resultAccess(principalId,sources,db);
         const reportVisible=dependencies.visible;
         const visible = async (ref: ResourceRef) => {
