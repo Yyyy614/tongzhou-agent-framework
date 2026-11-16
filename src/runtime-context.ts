@@ -29,18 +29,18 @@ export class RuntimeContext {
     private pages=new Map<string,{next:number|null;depth:number}>();
     private constructor(readonly host: Framework, readonly actor: Actor, readonly agent: Agent, public pack: any, public system: string, input: string,readonly runId:string) { this.messages = [{ role: 'user', content: input }];this.reading.reads=pack.recall?.budget.reads??0;this.reading.chars=pack.sources.reduce((n:number,s:any)=>n+s.includedChars,0);for(const s of pack.sources)this.pages.set(s.id+'@'+s.version,{next:s.nextOffset,depth:1}); }
     beginRead(name:string,input:any){
-        if(!['resource_read','resource_index','resource_recall','skill_read','skill_index','memory_search','memory_read','work_memory_read','plugin_read'].includes(name))return;
+        if(!['resource_read','resource_index','resource_recall','skill_read','skill_index','memory_search','memory_read','work_memory_read','work_memory_history','source_set_read','plugin_read'].includes(name))return;
         if(this.reading.reads>=this.reading.maxReads||this.reading.chars>=this.reading.maxChars)fail('CONTEXT_BUDGET_EXCEEDED','本轮读取预算已用完，请缩小范围或开始新的工作回合。');this.reading.reads++;
-        if(input.offset&&['resource_read','skill_read','memory_read','work_memory_read'].includes(name)){const page=this.pages.get((name==='work_memory_read'?'work-memory:'+this.pack.workId+':'+(input.section??'summary'):(input.id??input.noteId)+'@'+(input.version??input.path??'SKILL.md')));if(!page||page.next!==input.offset||page.depth>=this.reading.maxDepth)fail('CONTEXT_BUDGET_EXCEEDED','分页展开超出已确认的续读范围或深度，请缩小任务。');}
+        if(input.offset&&['resource_read','skill_read','memory_read','work_memory_read'].includes(name)){const page=this.pages.get((name==='work_memory_read'?'work-memory:'+this.pack.workId+':'+(input.revision??'current')+':'+(input.section??'summary'):(input.id??input.noteId)+'@'+(input.version??input.path??'SKILL.md')));if(!page||page.next!==input.offset||page.depth>=this.reading.maxDepth)fail('CONTEXT_BUDGET_EXCEEDED','分页展开超出已确认的续读范围或深度，请缩小任务。');}
     }
     readAllowance(){return Math.max(1,Math.min(4000,this.reading.maxChars-this.reading.chars-1200));}
     remainingReads(){return Math.max(1,this.reading.maxReads-this.reading.reads+1);}
     completeRead(name:string,input:any,output:any){
-        if(!['resource_read','resource_index','resource_recall','skill_read','skill_index','memory_search','memory_read','work_memory_read','plugin_read'].includes(name))return;
+        if(!['resource_read','resource_index','resource_recall','skill_read','skill_index','memory_search','memory_read','work_memory_read','work_memory_history','source_set_read','plugin_read'].includes(name))return;
         if(name==='resource_recall')this.reading.reads+=Math.max(0,(output.budget?.reads??1)-1);
         if(this.reading.reads>this.reading.maxReads)fail('CONTEXT_BUDGET_EXCEEDED','本轮读取次数超过上限。');
         const chars=JSON.stringify(output).length;if(this.reading.chars+chars>this.reading.maxChars)fail('CONTEXT_BUDGET_EXCEEDED','读取结果超过本轮上下文预算，未传入模型。请缩小查询范围。');this.reading.chars+=chars;
-        if(name==='resource_read'||name==='skill_read'||name==='memory_read'||name==='work_memory_read'){const key=(name==='work_memory_read'?'work-memory:'+this.pack.workId+':'+(input.section??'summary'):(input.id??input.noteId)+'@'+(input.version??input.path??'SKILL.md')),previous=this.pages.get(key);this.pages.set(key,{next:output.nextOffset,depth:input.offset?(previous?.depth??0)+1:1});}
+        if(name==='resource_read'||name==='skill_read'||name==='memory_read'||name==='work_memory_read'){const key=(name==='work_memory_read'?'work-memory:'+this.pack.workId+':'+(input.revision??'current')+':'+(input.section??'summary'):(input.id??input.noteId)+'@'+(input.version??input.path??'SKILL.md')),previous=this.pages.get(key);this.pages.set(key,{next:output.nextOffset,depth:input.offset?(previous?.depth??0)+1:1});}
     }
     static async create(host: Framework, actor: Actor, agent: Agent, input: string, resources: ResourceRef[] = [], workId?: string,runId:string=randomUUID(),maxChars=8000) {
         const noteIds: string[] = [];
@@ -114,7 +114,7 @@ export class RuntimeContext {
             this.receipts.set(call.id,{content:result.content,is_error:!!result.isError});
             // These host outputs have their resource origins attested before this callback;
             // work_report only counts the already-attested report. Plugin output is private.
-            const trackedHostOutput=['resource_read','resource_index','resource_recall','resource_create','skill_read','work_report'].includes(name)&&!result.isError;
+            const trackedHostOutput=['resource_read','resource_index','resource_recall','resource_create','skill_read','work_report','source_set_read'].includes(name)&&!result.isError;
             if(!trackedHostOutput)await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,[{kind:'tool',id:call.id,ownerId:this.actor.id,companyId:this.actor.companyId,digest:contentHash(result)}]);
         }
     }
