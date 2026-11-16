@@ -11,6 +11,7 @@ if(args.length!==4||args[0]!=='--release-manifest'||args[2]!=='--output')throw E
 const release=JSON.parse(await readFile(resolve(args[1]),'utf8'));
 const settings=companyReleaseConfig(release);
 const studio=settings.integratedChrome===true;
+const isolatedV07=studio&&settings.dataNamespace.startsWith('v07-');
 const executableName=release.executableName??basename(release.executable,'.exe');
 if(!['公司Harness','同舟'].includes(executableName))throw Error('Unexpected company executable name');
 const application=join(release.directory,'resources/app');
@@ -21,7 +22,7 @@ if(JSON.parse(await readFile(join(tools,'node_modules/electron-builder/package.j
 const project=join(root,'.tools/company-installer-project');await mkdir(project,{recursive:true});
 await writeFile(join(project,'package.json'),JSON.stringify({name:studio?'tongzhou-preview':'company-harness-cloud-test',version:settings.version,description:studio?'同舟框架预览':'公司 Harness 云端隔离测试',author:'Yyyy614 and Tongzhou contributors',license:'MIT'},null,2));
 const artifactName=studio?'Tongzhou-Preview-${version}-win-x64-Setup.exe':'CompanyHarness-CloudTest-${version}-x64-Setup.exe';
-const config={appId:studio?'com.tongzhou.framework.preview':'com.company.agent.harness.cloudtest',productName:studio?'同舟体验版':'公司Harness云端测试版',executableName,electronVersion:release.upstream.electronVersion,asar:false,npmRebuild:false,compression:'normal',directories:{output},win:{target:[{target:'nsis',arch:['x64']}],signAndEditExecutable:false,...(studio?{icon:join(application,'assets/icon.ico')}:{})},nsis:{guid:studio?'7993323b-4525-4f0e-a3a4-77c96aff290d':'35e348b9-4c40-4c81-9f7f-60c1c110548a',oneClick:false,perMachine:false,allowElevation:false,allowToChangeInstallationDirectory:true,createDesktopShortcut:true,createStartMenuShortcut:true,shortcutName:studio?'同舟（框架预览）':'公司Harness（云端测试）',runAfterFinish:false,deleteAppDataOnUninstall:false,differentialPackage:false,artifactName}};
+const config={appId:isolatedV07?'com.tongzhou.framework.preview.v07':studio?'com.tongzhou.framework.preview':'com.company.agent.harness.cloudtest',productName:isolatedV07?'同舟0.7隔离测试版':studio?'同舟体验版':'公司Harness云端测试版',executableName,electronVersion:release.upstream.electronVersion,asar:false,npmRebuild:false,compression:'normal',directories:{output},win:{target:[{target:'nsis',arch:['x64']}],signAndEditExecutable:false,...(studio?{icon:join(application,'assets/icon.ico')}:{})},nsis:{guid:isolatedV07?'fab82616-a490-469f-97ea-9c6be8e087d6':studio?'7993323b-4525-4f0e-a3a4-77c96aff290d':'35e348b9-4c40-4c81-9f7f-60c1c110548a',oneClick:false,perMachine:false,allowElevation:false,allowToChangeInstallationDirectory:true,createDesktopShortcut:true,createStartMenuShortcut:true,shortcutName:isolatedV07?'同舟（0.7隔离测试）':studio?'同舟（框架预览）':'公司Harness（云端测试）',runAfterFinish:false,deleteAppDataOnUninstall:false,differentialPackage:false,artifactName}};
 const configPath=join(project,'electron-builder.json');await writeFile(configPath,JSON.stringify(config,null,2));
 const env={...process.env,CSC_IDENTITY_AUTO_DISCOVERY:'false',ELECTRON_BUILDER_CACHE:join(root,'.tools/electron-builder-cache')};
 for(const name of Object.keys(env))if(/proxy|^NODE_OPTIONS$|^GLOBAL_AGENT/iu.test(name))delete env[name];

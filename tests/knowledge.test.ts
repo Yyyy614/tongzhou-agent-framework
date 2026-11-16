@@ -1,4 +1,4 @@
-import {test,expect} from 'vitest';
+import {test,expect,vi} from 'vitest';
 import {mkdir,mkdtemp,writeFile} from 'node:fs/promises';
 import{referenceFileSource}from'../examples/sources/reference-file.mjs';
 import {resolve} from 'node:path';
@@ -28,3 +28,5 @@ test('Chinese recall and a separately supplied file source obey the same canonic
   await writeFile(indexFile,'not valid JSON');const unavailable=await host.knowledge.recall('alice','job',{query:'check'});expect(unavailable.coverage.status).toBe('partial');expect(unavailable.coverage.omissions.some(o=>o.reason==='source-unavailable')).toBe(true);
  }finally{await host.close();}
 });
+
+test('a company topic survives ICU dictionaries that split its Chinese name into single characters',async()=>{await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/topic-phrase-')),resourceWorker:false});const segmenter=vi.spyOn(Intl,'Segmenter').mockImplementation(class{segment(){return [...'云端适配校验'].map(segment=>({segment,isWordLike:true})).concat(['利用','已经','召回','规范','记录','保存'].map(segment=>({segment,isWordLike:true})));}} as any);try{await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'alice',companyId:'one',role:'employee',permissions:[]});await host.putAgent({id:'job',companyId:'one',ownerId:'alice',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});const r=await host.resources.create('alice',{title:'云端适配校验 · 规范',domain:'guides',kind:'document',body:'Preserve topic and source',access:{scope:'personal',readerIds:[]},idempotencyKey:'one'});const result=await host.knowledge.recall('alice','job',{query:'云端适配校验：利用已经召回的规范和记录保存工作笔记'});expect(result.fragments.map(f=>f.ref.id)).toContain(r.id);}finally{segmenter.mockRestore();await host.close();}});
