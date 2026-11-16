@@ -19,6 +19,7 @@ export class SourceProvenance {
     async open(){await this.host.db.pool.query(`
       CREATE TABLE IF NOT EXISTS execution_sources(run_id text PRIMARY KEY,company_id text NOT NULL,principal_id text NOT NULL,agent_id text NOT NULL,sources jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now());
       CREATE TABLE IF NOT EXISTS model_context_requests(id uuid PRIMARY KEY,run_id text NOT NULL,principal_id text NOT NULL,agent_id text NOT NULL,ordinal integer NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(run_id,ordinal));
+      CREATE TABLE IF NOT EXISTS execution_reports(run_id text PRIMARY KEY,report_hash text NOT NULL,sources jsonb NOT NULL);
       CREATE TABLE IF NOT EXISTS execution_work_revisions(run_id text NOT NULL,work_id uuid NOT NULL,agent_id text NOT NULL,owner_id text NOT NULL,revision integer NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(run_id,work_id,agent_id,owner_id,revision));
     `);}
     unique(sources:SourceOrigin[]){return [...new Map(sources.map(s=>[contentHash(s),s])).values()];}
@@ -47,6 +48,8 @@ export class SourceProvenance {
             await client.query('INSERT INTO execution_work_revisions(run_id,work_id,agent_id,owner_id,revision) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',[runId,workId,agentId,actor.id,revision]);await client.query('COMMIT');
         }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
     }
+    async sealReport(runId:string,report:unknown){const sources=await this.snapshot(runId);await this.host.db.pool.query('INSERT INTO execution_reports(run_id,report_hash,sources) VALUES($1,$2,$3) ON CONFLICT(run_id) DO UPDATE SET report_hash=EXCLUDED.report_hash,sources=EXCLUDED.sources',[runId,contentHash(report),JSON.stringify(sources?.length?sources:[{kind:'unknown',id:runId}])]);}
+    async reportSources(runId:string,report:unknown,client:Query=this.host.db.pool):Promise<SourceOrigin[]|undefined>{const row=(await client.query('SELECT * FROM execution_reports WHERE run_id=$1',[runId])).rows[0];return row&&row.report_hash===contentHash(report)?row.sources:undefined;}
     async resultAccess(principalId:string,sources:SourceOrigin[]|null|undefined,client:Query=this.host.db.pool){
         if(!sources?.length||sources.some(s=>s.kind==='unknown'))return{visible:false,current:false,fingerprint:null,visibility:'unknown',validity:'unknown',notice:'来源账本缺失，派生正文受限；执行记录和控制状态保留。'};
         const status=await this.status(principalId,sources,client);

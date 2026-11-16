@@ -137,7 +137,7 @@ export class Resources {
           (w.current_round=1 AND EXISTS(SELECT 1 FROM work_assignments a WHERE a.work_id=w.id AND a.agent_id=ANY($2::text[])) OR
            w.current_round>1 AND EXISTS(SELECT 1 FROM work_round_assignments a WHERE a.work_id=w.id AND a.round=w.current_round AND a.agent_id=ANY($2::text[])))`,[actor.companyId,ids])).rows.map(r=>r.id);
     }
-    async index(principalId: string, query = '', domain?: string, page:{limit?:number;cursor?:string}={}) {
+    async index(principalId: string, query = '', domain?: string, page:{limit?:number;cursor?:string;maxScans?:number}={}) {
         if (typeof query !== 'string' || query.length > 240 || (domain && (typeof domain !== 'string' || domain.length > 80))) fail('INVALID_INPUT', 'Invalid resource query');
         const limit=page.limit??100;if(!Number.isInteger(limit)||limit<1||limit>100)fail('INVALID_INPUT','Invalid resource page size');
         const key=contentHash([principalId,query,domain??null]);let cursor:any;
@@ -145,7 +145,7 @@ export class Resources {
         return this.reading(async client=>{
         const actor = await this.actor(principalId,client);
         const workIds=await this.visibleWorks(actor,client),found:any[]=[];
-        let after=cursor;
+        let after=cursor,scanned=0,scanLimited=false;
         for(;;){
             const rows=(await client.query(`SELECT r.*,v.version,v.digest,v.dependencies,v.dependencies_mode,v.source_refs,to_char(r.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at
               FROM company_resources r JOIN resource_versions v ON v.resource_id=r.id AND v.version=r.current_version
@@ -154,13 +154,14 @@ export class Resources {
                  r.access->>'scope'='department' AND r.access->>'departmentId'=$3 OR r.access->>'workId'=ANY($4::text[]))
                 AND (r.title ILIKE $5 OR v.body ILIKE $5) AND ($6::text IS NULL OR r.domain=$6) AND ($6::text IS NOT NULL OR r.domain<>'work-process')
                 AND ($7::timestamptz IS NULL OR r.updated_at<$7 OR r.updated_at=$7 AND r.id>$8::uuid)
-              ORDER BY r.updated_at DESC,r.id LIMIT 200`,[actor.companyId,actor.id,actor.departmentId??null,workIds,'%'+query.replaceAll('\\','\\\\').replaceAll('%','\\%').replaceAll('_','\\_')+'%',domain??null,after?.at??null,after?.id??null])).rows;
-            for(const row of rows)if(await this.canRead(actor,row,client)){const status=await this.versionStatus(actor,row,row,client);if(status.visible){row.dependency_status=status;found.push(row);if(found.length>limit)break;}}
+              ORDER BY r.updated_at DESC,r.id LIMIT $9`,[actor.companyId,actor.id,actor.departmentId??null,workIds,'%'+query.replaceAll('\\','\\\\').replaceAll('%','\\%').replaceAll('_','\\_')+'%',domain??null,after?.at??null,after?.id??null,Math.min(200,(page.maxScans??1000000)-scanned)])).rows;
+            for(const row of rows){scanned++;after={at:row.cursor_at,id:row.id};if(await this.canRead(actor,row,client)){const status=await this.versionStatus(actor,row,row,client);if(status.visible){row.dependency_status=status;found.push(row);if(found.length>limit)break;}}}
+            if(page.maxScans&&scanned>=page.maxScans){scanLimited=true;break;}
             if(found.length>limit||rows.length<200)break;
             const last=rows.at(-1)!;after={at:last.cursor_at,id:last.id};
         }
-        const items=found.slice(0,limit),last=items.at(-1),limited=found.length>limit;
-        return { items: items.map(row => this.metadata(row, row,row.dependency_status)), asOf: new Date().toISOString(), coverage: 'authorized-resources', limited,hasMore:limited,nextCursor:limited&&last?Buffer.from(JSON.stringify({key,at:last.cursor_at,id:last.id})).toString('base64url'):null };
+        const items=found.slice(0,limit),last=items.at(-1),limited=found.length>limit||scanLimited;
+        return { items: items.map(row => this.metadata(row, row,row.dependency_status)), asOf: new Date().toISOString(), coverage: 'authorized-resources', limited,hasMore:limited,nextCursor:limited&&(last||after)?Buffer.from(JSON.stringify({key,at:last?.cursor_at??after.at,id:last?.id??after.id})).toString('base64url'):null,...(page.maxScans?{scanned}:{}) };
         });
     }
     async update(principalId: string, id: string, input: { revision: string; body?: string; sourceRefs?: string[]; access?: ResourceAccess }) {
@@ -174,8 +175,9 @@ export class Resources {
             if (input.access) { await this.checkAccess(actor, input.access, client); await client.query('UPDATE company_resources SET access=$2,access_epoch=access_epoch+1,updated_at=now() WHERE id=$1', [id, JSON.stringify(input.access)]); }
             else {
                 if (typeof input.body !== 'string' || input.body.length > 128000 || !this.host.registry.ajv.validate(strings, input.sourceRefs ?? [])) fail('INVALID_INPUT', 'Invalid resource version');
-                const version = row.current_version + 1, refs = input.sourceRefs ?? [], digest = contentHash({ body: input.body, sourceRefs: refs });
+                const version = row.current_version + 1;
                 const previous=(await client.query('SELECT dependencies,dependencies_mode,source_refs FROM resource_versions WHERE resource_id=$1 AND version=$2',[id,row.current_version])).rows[0];
+                const refs=[...new Set([...(input.sourceRefs??[]),...previous.source_refs.filter((s:string)=>/^(?:run|task):/u.test(s))])],digest=contentHash({body:input.body,sourceRefs:refs});
                 const dependencies=this.dependencies(previous,row.owner_id);
                 await client.query('INSERT INTO resource_versions(resource_id,version,digest,body,source_refs,created_by,dependencies,dependencies_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [id, version, digest, input.body, JSON.stringify(refs), actor.id,dependencies===null?null:JSON.stringify(dependencies),previous.dependencies_mode]);
                 await client.query('UPDATE company_resources SET current_version=$2,updated_at=now() WHERE id=$1', [id, version]);

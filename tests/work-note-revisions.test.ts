@@ -13,3 +13,9 @@ test('CAS and idempotency preserve exact saved revisions; inherited private evid
  await f.host.resources.update('bob',base.id,{revision:base.revision,access:{scope:'personal',readerIds:[]}});expect((await f.host.workMemory.read('alice',f.work.id,'job')).visibility).toBe('sources-unavailable');
  await expect(f.host.workMemory.save('alice',f.work.id,'job',f.note(2,'Drop links to private base'))).rejects.toMatchObject({code:'NOT_FOUND'});
  }finally{await f.close();}});
+
+test('a sealed report retains its original active decision even when its run later adopts a corrected note',async()=>{const f=await fixture();try{
+ await f.host.workMemory.save('alice',f.work.id,'job',f.note(0,'DECISION-A'));const origin=await f.host.workMemory.origin('alice',f.work.id,'job');const task=(await f.host.db.pool.query("SELECT * FROM tasks WHERE data->>'workId'=$1",[f.work.id])).rows[0],runId=crypto.randomUUID();await f.host.provenance.add(runId,'alice','job',[origin!.ref,...origin!.sources]);
+ const report={facts:[{text:'DECISION-A',refs:[]}],artifacts:[],issues:[]};await f.host.provenance.sealReport(runId,report);const saved=await f.host.workMemory.save('alice',f.work.id,'job',f.note(1,'DECISION-B'),await f.host.provenance.snapshot(runId),false,undefined,runId);await f.host.provenance.acceptWorkRevision(runId,'alice','job',f.work.id,saved.revision);await f.host.results.capture(task,{id:runId,state:'succeeded',output:'Finished',report});
+ const result=await f.host.results.view('alice',task.id);expect(result!.facts[0]).toMatchObject({text:'DECISION-A',freshness:'stale'});expect(result!.summary).not.toContain('DECISION-A');expect(result!.sourceValidity).toBe('source-changed');
+ }finally{await f.close();}});

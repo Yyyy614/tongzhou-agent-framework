@@ -60,3 +60,14 @@ interface MemorySource {
 经验依次经过个人候选、人工验证说明、提交、独立审核、限定范围发布、安装、反馈与停用。静态包校验和人工验证不是自动证明业务正确；个人反馈不会自动变成公司规则。
 
 员工在 Harness 的“工作依据与记忆”查看来源、预算、遗漏、笔记及候选经验；管理员在“上下文与资料域”查看授权投影和用量。技术标识收在详情中。检索和确定性笔记压缩记录为本地处理、模型调用为零；模型执行及事件归属调用按真实网关用量独立计量。
+
+
+## 0.8 来源搜索续查
+
+`MemorySource.search(principalId, domain, query, limit, {cursor?, maxScans?})` 保持前四个参数兼容，返回 `refs, hasMore, nextCursor?, scanned?`。可分页源另实现 `indexVersion(principalId, domain)`，版本必须随索引内容变化。适配器先在可读匹配内应用 limit，扫描上限与正文读取限额分开；文件示例始终从标准资源服务读取内容与授权。
+
+宿主 `/v1/agents/:agentId/recall` 增加 `cursor` 和 `maxScans`。返回的游标为一天有效的随机引用，不含内部候选位置；它绑定公司、员工、岗位、工作、查询、资料域、源版本和权威授权/资料/记忆变化水位。变化或跨范围续查返回 CONFLICT，请重新查询。`coverage.omissions[].continuation` 提供各域的具体续查参数，单域也提供顶层 nextCursor。分页不支持的旧适配器继续运行，但 hasMore 时明确 pagination-unsupported，不伪造游标。
+
+内部 scanned 仅用于限额和操作记录，不显示给员工。hasMore 表示扫描尚未完成，不能解释为还有多少可见或隐藏资料。无匹配、扫描限制、读取/字符限制、来源中断与版本冲突分别表达。返回片段仍进行宿主标准版本和正文复验，适配器声明不授予任何新权限。
+
+工作笔记旧版本通过原读取接口 `?revision=N` 查看，返回 currentRevision 与 source-changed；正文沿用底层权限。生成成果保存生成时的不可变来源快照；最终执行过程仍受完整 Run 账本约束。work_report 的宿主回执同样封存当时来源，之后的修订不能让旧报告重新变成当前。
