@@ -28,6 +28,7 @@ export class Resources {
           CREATE TABLE IF NOT EXISTS context_packs(id uuid PRIMARY KEY,company_id text NOT NULL,principal_id text NOT NULL,agent_id text NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
           ALTER TABLE company_resources ADD COLUMN IF NOT EXISTS access_epoch bigint NOT NULL DEFAULT 1;
           ALTER TABLE resource_versions ADD COLUMN IF NOT EXISTS dependencies jsonb;
+          ALTER TABLE resource_versions ADD COLUMN IF NOT EXISTS dependencies_mode text NOT NULL DEFAULT 'legacy';
           CREATE INDEX IF NOT EXISTS resource_company_order ON company_resources(company_id,updated_at DESC,id);
         `);
     }
@@ -73,7 +74,7 @@ export class Resources {
         return version.dependencies??(version.source_refs?.some((s:string)=>/^(?:run|task):/u.test(s))?[{kind:'unknown',id:'legacy-resource',ownerId}]:null);
     }
     private async versionStatus(actor:Actor,row:any,version:any,client:Pick<PoolClient,'query'>){const sources=this.dependencies(version,row.owner_id),runRef=version.source_refs?.find((s:string)=>s.startsWith('run:')),taskRef=version.source_refs?.find((s:string)=>s.startsWith('task:'));
-        if(runRef||taskRef){let runId=runRef?.slice(4);if(!runId&&/^[a-f0-9-]{36}$/iu.test(taskRef?.slice(5)??''))runId=(await client.query("SELECT data->>'runId' AS run_id FROM tasks WHERE id=$1",[taskRef.slice(5)])).rows[0]?.run_id;return this.host.provenance.resultForRun(actor.id,runId,sources,client);}
+        if(runRef||taskRef){if(version.dependencies_mode==='snapshot')return this.host.provenance.resultAccess(actor.id,sources,client);let runId=runRef?.slice(4);if(!runId&&/^[a-f0-9-]{36}$/iu.test(taskRef?.slice(5)??''))runId=(await client.query("SELECT data->>'runId' AS run_id FROM tasks WHERE id=$1",[taskRef.slice(5)])).rows[0]?.run_id;return this.host.provenance.resultForRun(actor.id,runId,sources,client);}
         return sources===null?{visible:true,current:true,fingerprint:null}:this.host.provenance.status(actor.id,sources,client);}
     /** Primitive origin check; inherited origins are flattened and checked separately by the host. */
     async originStatus(principalId:string,source:SourceOrigin,client:Pick<PoolClient,'query'>=this.host.db.pool){
@@ -105,7 +106,7 @@ export class Resources {
             if (prior) { if (prior.input_hash !== hash) fail('CONFLICT', 'Resource request identity changed'); await client.query('COMMIT'); return derivation?.retentionOnly?this.retained(prior.id):this.read(actor.id, prior.id); }
             const id = randomUUID(), refs = input.sourceRefs ?? [], digest = contentHash({ body: input.body, sourceRefs: refs });
             await client.query('INSERT INTO company_resources(id,company_id,owner_id,request_key,input_hash,title,kind,domain,current_version,access,valid_until) VALUES($1,$2,$3,$4,$5,$6,$7,$8,1,$9,$10)', [id, actor.companyId, actor.id, key, hash, input.title, input.kind, input.domain, JSON.stringify(input.access), input.validUntil ?? null]);
-            await client.query('INSERT INTO resource_versions(resource_id,version,digest,body,source_refs,created_by,dependencies) VALUES($1,1,$2,$3,$4,$5,$6)', [id, digest, input.body, JSON.stringify(refs), actor.id,derivation?JSON.stringify(derivation.sources):null]);
+            await client.query('INSERT INTO resource_versions(resource_id,version,digest,body,source_refs,created_by,dependencies,dependencies_mode) VALUES($1,1,$2,$3,$4,$5,$6,$7)', [id, digest, input.body, JSON.stringify(refs), actor.id,derivation?JSON.stringify(derivation.sources):null,derivation&&!derivation.retentionOnly?'snapshot':'legacy']);
             await client.query('INSERT INTO audit(id,type,data) VALUES($1,$2,$3)', [randomUUID(), 'resource.created', JSON.stringify({ principalId: actor.id, companyId: actor.companyId, resourceId: id, version: 1, digest })]);
             await this.host.resourceIndex.schedule(client,id,'created');
             await client.query('COMMIT'); return derivation?.retentionOnly?this.retained(id):this.read(actor.id, id);
@@ -146,7 +147,7 @@ export class Resources {
         const workIds=await this.visibleWorks(actor,client),found:any[]=[];
         let after=cursor;
         for(;;){
-            const rows=(await client.query(`SELECT r.*,v.version,v.digest,v.dependencies,v.source_refs,to_char(r.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at
+            const rows=(await client.query(`SELECT r.*,v.version,v.digest,v.dependencies,v.dependencies_mode,v.source_refs,to_char(r.updated_at AT TIME ZONE 'UTC','YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS cursor_at
               FROM company_resources r JOIN resource_versions v ON v.resource_id=r.id AND v.version=r.current_version
               WHERE r.company_id=$1 AND r.active=true AND
                 (r.owner_id=$2 OR r.access->'readerIds' ? $2 OR r.access->>'scope'='company' OR
@@ -174,9 +175,9 @@ export class Resources {
             else {
                 if (typeof input.body !== 'string' || input.body.length > 128000 || !this.host.registry.ajv.validate(strings, input.sourceRefs ?? [])) fail('INVALID_INPUT', 'Invalid resource version');
                 const version = row.current_version + 1, refs = input.sourceRefs ?? [], digest = contentHash({ body: input.body, sourceRefs: refs });
-                const previous=(await client.query('SELECT dependencies,source_refs FROM resource_versions WHERE resource_id=$1 AND version=$2',[id,row.current_version])).rows[0];
+                const previous=(await client.query('SELECT dependencies,dependencies_mode,source_refs FROM resource_versions WHERE resource_id=$1 AND version=$2',[id,row.current_version])).rows[0];
                 const dependencies=this.dependencies(previous,row.owner_id);
-                await client.query('INSERT INTO resource_versions(resource_id,version,digest,body,source_refs,created_by,dependencies) VALUES($1,$2,$3,$4,$5,$6,$7)', [id, version, digest, input.body, JSON.stringify(refs), actor.id,dependencies===null?null:JSON.stringify(dependencies)]);
+                await client.query('INSERT INTO resource_versions(resource_id,version,digest,body,source_refs,created_by,dependencies,dependencies_mode) VALUES($1,$2,$3,$4,$5,$6,$7,$8)', [id, version, digest, input.body, JSON.stringify(refs), actor.id,dependencies===null?null:JSON.stringify(dependencies),previous.dependencies_mode]);
                 await client.query('UPDATE company_resources SET current_version=$2,updated_at=now() WHERE id=$1', [id, version]);
             }
             await client.query('INSERT INTO audit(id,type,data) VALUES($1,$2,$3)', [randomUUID(), input.access ? 'resource.access_changed' : 'resource.version_created', JSON.stringify({ principalId: actor.id, companyId: actor.companyId, resourceId: id })]);
