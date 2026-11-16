@@ -44,9 +44,7 @@ export class WorkResults {
         const row = (await db.query('SELECT * FROM task_results WHERE task_id=$1', [taskId])).rows[0];
         if (!row) return null;
         const own = row.owner_id === principalId, facts: any[] = [], artifacts: any[] = [], issues: string[] = [];
-        const ledger=await this.host.provenance.snapshot(row.run_id,db);
-        const sources=row.dependencies?.length&&ledger?.length&&!ledger.some(s=>s.kind==='unknown')?this.host.provenance.unique([...row.dependencies,...ledger]):null;
-        const dependencies=await this.host.provenance.resultAccess(principalId,sources,db);
+        const dependencies=await this.host.provenance.resultForRun(principalId,row.run_id,row.dependencies,db);
         const reportVisible=dependencies.visible;
         const visible = async (ref: ResourceRef) => {
             try { const source = await this.host.resources.read(principalId, ref.id, ref.version,0,16000,client); return { id: source.id, version: source.version, digest: source.digest, title: source.title, freshness: source.derivedValidity==='current'?source.freshness:'stale' }; }

@@ -31,9 +31,14 @@ export class SourceProvenance {
     }
     async snapshot(runId:string,client:Query=this.host.db.pool){return (await client.query('SELECT sources FROM execution_sources WHERE run_id=$1',[runId])).rows[0]?.sources as SourceOrigin[]|undefined;}
     async resultAccess(principalId:string,sources:SourceOrigin[]|null|undefined,client:Query=this.host.db.pool){
-        if(!sources?.length||sources.some(s=>s.kind==='unknown'))return{visible:false,current:false,visibility:'unknown',validity:'unknown',notice:'来源账本缺失，派生正文受限；执行记录和控制状态保留。'};
+        if(!sources?.length||sources.some(s=>s.kind==='unknown'))return{visible:false,current:false,fingerprint:null,visibility:'unknown',validity:'unknown',notice:'来源账本缺失，派生正文受限；执行记录和控制状态保留。'};
         const status=await this.status(principalId,sources,client);
         return{...status,visibility:status.visible?'authorized':'restricted',validity:!status.visible?'restricted':status.current?'current':'source-changed',notice:!status.visible?'部分来源当前不可读取，派生正文受限。':status.current?'按当前来源权限可读；结论仍需核实。':'历史来源已被替代或失效；可查历史，不作为当前结论。'};
+    }
+    async resultForRun(principalId:string,runId:string|undefined,retainedSources:SourceOrigin[]|null|undefined,client:Query=this.host.db.pool){
+        const ledger=runId?await this.snapshot(runId,client):undefined;
+        const sources=retainedSources?.length&&ledger?.length&&!ledger.some(s=>s.kind==='unknown')?this.unique([...retainedSources,...ledger]):null;
+        return this.resultAccess(principalId,sources,client);
     }
     async input(runId:string,actor:Actor,agentId:string,input:string,client:Query=this.host.db.pool):Promise<SourceOrigin>{
         const task=(await client.query("SELECT t.principal_id FROM runs r JOIN tasks t ON t.id::text=r.data->>'taskId' WHERE r.id=$1 AND r.principal_id=$2 AND t.data->>'executionPrincipalId'=$2 AND t.agent_id=$3",[runId,actor.id,agentId])).rows[0];

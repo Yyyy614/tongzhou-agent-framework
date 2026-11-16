@@ -72,7 +72,9 @@ export class Resources {
     private dependencies(version:any,ownerId:string):SourceOrigin[]|null{
         return version.dependencies??(version.source_refs?.some((s:string)=>/^(?:run|task):/u.test(s))?[{kind:'unknown',id:'legacy-resource',ownerId}]:null);
     }
-    private async versionStatus(actor:Actor,row:any,version:any,client:Pick<PoolClient,'query'>){const sources=this.dependencies(version,row.owner_id);return sources===null?{visible:true,current:true,fingerprint:null}:this.host.provenance.status(actor.id,sources,client);}
+    private async versionStatus(actor:Actor,row:any,version:any,client:Pick<PoolClient,'query'>){const sources=this.dependencies(version,row.owner_id),runRef=version.source_refs?.find((s:string)=>s.startsWith('run:')),taskRef=version.source_refs?.find((s:string)=>s.startsWith('task:'));
+        if(runRef||taskRef){let runId=runRef?.slice(4);if(!runId&&/^[a-f0-9-]{36}$/iu.test(taskRef?.slice(5)??''))runId=(await client.query("SELECT data->>'runId' AS run_id FROM tasks WHERE id=$1",[taskRef.slice(5)])).rows[0]?.run_id;return this.host.provenance.resultForRun(actor.id,runId,sources,client);}
+        return sources===null?{visible:true,current:true,fingerprint:null}:this.host.provenance.status(actor.id,sources,client);}
     /** Primitive origin check; inherited origins are flattened and checked separately by the host. */
     async originStatus(principalId:string,source:SourceOrigin,client:Pick<PoolClient,'query'>=this.host.db.pool){
         const actor=await this.actor(principalId,client),row=(await client.query('SELECT * FROM company_resources WHERE id=$1',[source.id])).rows[0];
