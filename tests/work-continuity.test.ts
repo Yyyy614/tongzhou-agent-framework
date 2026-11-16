@@ -98,6 +98,9 @@ test('a continuation checkpoint contains only the executing employee previous re
         expect(checkpoint.confirmedTask).toMatchObject({taskId:first.assignments[0].taskId,state:'succeeded',summary:'执行已结束，等待人工核对',result:{processAvailable:true}});
         const reference=checkpoint.confirmedTask.result.processRef;
         expect((await f.host.resources.read('alice',reference.id,reference.version)).body).toBe('Confirmed first confirmed action');
+        await f.host.db.pool.query('DELETE FROM task_results WHERE task_id=$1',[first.assignments[0].taskId]);
+        await f.host.db.pool.query('UPDATE tasks SET data=data||$2::jsonb WHERE id=$1',[first.assignments[0].taskId,JSON.stringify({resultFormat:'references-v1',output:'MISSING-RESULT-PRIVATE-RAW'})]);
+        const missing=await f.host.coordination!.continuity.checkpointForTask('alice',receipt.taskIds[0]!);expect(JSON.stringify(missing)).not.toContain('MISSING-RESULT-PRIVATE-RAW');expect(missing.confirmedTask!.summary).toBe('执行记录待整理或核实');
         await expect(f.host.coordination!.continuity.checkpointForTask('lead',receipt.taskIds[0]!)).rejects.toMatchObject({code:'PERMISSION_DENIED'});
         await f.host.putActor({id:'alice',companyId:'one',role:'employee',managerId:null,active:false,permissions:[]});
         await expect(f.host.coordination!.continuity.checkpointForTask('alice',receipt.taskIds[0]!)).rejects.toMatchObject({code:'PERMISSION_DENIED'});

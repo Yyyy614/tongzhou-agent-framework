@@ -56,10 +56,10 @@ export class WorkMemory {
             const previous=await this.latest(workId,agentId,actor.id,client);
             if((previous?.revision??0)!==input.expectedRevision)fail('CONFLICT','Work note changed; reload before saving');
             const sourceRefs=[...input.artifacts,...input.decisions.flatMap(i=>i.refs),...input.blockers.flatMap(i=>i.refs),...input.nextSteps.flatMap(i=>i.refs)];
-            const sources:SourceOrigin[]=[...(derivation??[]),{kind:'input',id:'work-note:'+key,ownerId:actor.id,companyId:actor.companyId}];
-            for(const ref of sourceRefs){const source=await this.host.resources.originStatus(actor.id,{kind:'resource',...ref});if(!source.visible)fail('NOT_FOUND','Work note reference is unavailable');sources.push(...await this.host.provenance.resourceOrigins({...ref,revision:source.revision}));}
+            const sources:SourceOrigin[]=[...(previous?.dependencies??[]),...(derivation??[]),{kind:'input',id:'work-note:'+key,ownerId:actor.id,companyId:actor.companyId}];
+            for(const ref of sourceRefs){const source=await this.host.resources.originStatus(actor.id,{kind:'resource',...ref},client);if(!source.visible)fail('NOT_FOUND','Work note reference is unavailable');sources.push(...await this.host.provenance.resourceOrigins({...ref,revision:source.revision},client));}
             const dependencies=this.host.provenance.unique(sources);if(dependencies.length>512)fail('CONTEXT_BUDGET_EXCEEDED','Work note source limit reached');
-            if(!(await this.host.provenance.status(actor.id,dependencies)).visible)fail('NOT_FOUND','Work note source is unavailable');
+            if(!(await this.host.provenance.status(actor.id,dependencies,client)).visible)fail('NOT_FOUND','Work note source is unavailable');
             const {expectedRevision,idempotencyKey,...note}=input,revision=expectedRevision+1;
             await client.query('INSERT INTO work_memory_versions(id,company_id,work_id,principal_id,agent_id,revision,data,dependencies,request_key,input_hash) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)',[randomUUID(),actor.companyId,workId,actor.id,agent.id,revision,JSON.stringify(note),JSON.stringify(dependencies),key,hash]);
             await client.query('INSERT INTO audit(id,type,data) VALUES($1,$2,$3)',[randomUUID(),'work.memory_saved',JSON.stringify({companyId:actor.companyId,principalId:actor.id,agentId:agent.id,workId,revision})]);
@@ -80,13 +80,23 @@ export class WorkMemory {
         const row=await this.latest(workId,agentId,agent.ownerId);
         return row?{ref:{kind:'work-memory' as const,id:workId,agentId,version:row.revision,ownerId:agent.ownerId},sources:row.dependencies}:null;
     }
+    async originStatus(principalId:string,source:SourceOrigin,client:Pick<PoolClient,'query'>=this.host.db.pool){
+        try{
+            const scope=await this.authorize(principalId,source.id,source.agentId!,client);
+            if(!scope.own&&!scope.actor.permissions.includes('work.memory.read:'+scope.agent.id))return{visible:false,authority:null};
+            if(scope.agent.ownerId!==source.ownerId)return{visible:false,authority:null};
+            const version=(await client.query('SELECT id FROM work_memory_versions WHERE work_id=$1 AND agent_id=$2 AND principal_id=$3 AND revision=$4',[source.id,source.agentId,source.ownerId,source.version])).rows[0];
+            return{visible:!!version,authority:contentHash({companyId:scope.actor.companyId,ownerId:scope.agent.ownerId,agentId:scope.agent.id,actor:scope.actor})};
+        }catch(error){if(['PERMISSION_DENIED','NOT_FOUND'].includes((error as any).code))return{visible:false,authority:null};throw error;}
+    }
     async compact(principalId:string,workId:string,agentId:string,maxChars=2800){
         const current=await this.read(principalId,workId,agentId),note=current.note;
-        const value:any={workId,facts:current.facts,goal:note?.goal??current.title,decisions:[],blockers:[],nextSteps:[],resultRefs:[],noteRef:current.memoryRef??null,omissions:[],readMore:'/v1/work/'+workId+'/memory/'+agentId};
-        if(JSON.stringify(value).length>maxChars)fail('CONTEXT_BUDGET_EXCEEDED','Required work state does not fit the memory budget');
-        for(const field of ['decisions','blockers','nextSteps','resultRefs'] as const){const candidates=field==='resultRefs'?current.resultRefs:note?.[field]??[];let skipped=0;
-            for(const item of candidates){value[field].push(item);if(JSON.stringify(value).length>maxChars-180){value[field].pop();skipped++;}}
-            if(skipped)value.omissions.push({section:field,reason:'budget',continuation:value.readMore});
+        const value:any={workId,facts:current.facts,goal:note?.goal??current.title,decisions:[],blockers:[],nextSteps:[],artifacts:[],resultRefs:[],noteRef:current.memoryRef??null,omissions:[],readMore:'/v1/work/'+workId+'/memory/'+agentId};
+        const sections=(['decisions','blockers','nextSteps','artifacts','resultRefs'] as const).map(field=>({field,candidates:field==='resultRefs'?current.resultRefs:note?.[field]??[]}));
+        value.omissions=sections.filter(s=>s.candidates.length).map(s=>({section:s.field,count:s.candidates.length,reason:'budget',continuation:value.readMore}));
+        if(JSON.stringify(value).length>maxChars)fail('CONTEXT_BUDGET_EXCEEDED','Required work state and continuation references do not fit the memory budget');
+        for(const {field,candidates} of sections){
+            for(const item of candidates){const previous=structuredClone(value.omissions);value[field].push(item);const omitted=value.omissions.find((o:any)=>o.section===field);if(omitted&&!--omitted.count)value.omissions=value.omissions.filter((o:any)=>o!==omitted);if(JSON.stringify(value).length>maxChars){value[field].pop();value.omissions=previous;}}
         }
         return{text:JSON.stringify(value),ref:current.memoryRef?{workId,agentId,revision:current.revision}:null,resultRefs:value.resultRefs,omissions:value.omissions};
     }

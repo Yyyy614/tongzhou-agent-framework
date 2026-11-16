@@ -39,7 +39,7 @@ export class WorkControl{
         try{return await this.authorize(client,principalId,id);}catch(error){if((error as any).code!=='PERMISSION_DENIED')throw error;return this.authorize(client,principalId,id,true);}
     }
     private async canReadPayload(client:Pick<PoolClient,'query'>,principalId:string,agentId:string,tool:string,dependencies?:import('./provenance.js').SourceOrigin[]){
-        if(dependencies&&!(await this.host.provenance.status(principalId,dependencies)).visible)return false;
+        if(dependencies&&!(await this.host.provenance.status(principalId,dependencies,client)).visible)return false;
         let privateMemory=tool.startsWith('memory_write@');
         const versionAt=tool.lastIndexOf('@'),colon=tool.lastIndexOf(':');
         if(colon>0&&versionAt>colon){

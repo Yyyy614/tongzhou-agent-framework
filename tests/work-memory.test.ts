@@ -1,6 +1,16 @@
 import{test,expect}from'vitest';import{mkdir,mkdtemp}from'node:fs/promises';import{resolve}from'node:path';
 import{createFramework}from'../src/index.js';import{createServer}from'../src/server.js';import{TaskQueue}from'../src/tasks.js';
 
+test('bounded work memory accounts for omitted decisions and artifact continuation references',async()=>{
+    await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/work-memory-budget-'))}),app=await createServer(host),queue=new TaskQueue(host,{async run(){throw Error('Read only');}});
+    try{
+        await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'alice',companyId:'one',role:'admin',permissions:[]});await host.putAgent({id:'job',companyId:'one',ownerId:'alice',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});await queue.open();queue.registerRoutes(app);
+        const work=await host.coordination!.create('alice',{title:'Budgeted notes',idempotencyKey:'one',assignments:[{agentId:'job',prompt:'Preserve references'}]});const resource=await host.resources.create('alice',{title:'Artifact',kind:'document',domain:'validation',body:'One artifact',access:{scope:'personal',readerIds:[]},idempotencyKey:'one'});
+        await host.workMemory.save('alice',work.id,'job',{goal:'Keep key state',expectedRevision:0,idempotencyKey:'note',decisions:Array.from({length:12},(_,i)=>({text:String(i)+':'+ 'D'.repeat(400),refs:[]})),blockers:[],nextSteps:[],artifacts:[{id:resource.id,version:1}]});
+        const compact=await host.workMemory.compact('alice',work.id,'job',1500),value=JSON.parse(compact.text);expect(compact.text.length).toBeLessThanOrEqual(1500);expect(value.omissions).toEqual(expect.arrayContaining([expect.objectContaining({section:'decisions',reason:'budget',continuation:expect.stringContaining('/memory/')})]));expect(value.decisions.length+value.omissions.find((o:any)=>o.section==='decisions').count).toBe(12);expect(value.artifacts.length||value.omissions.some((o:any)=>o.section==='artifacts')).toBeTruthy();
+    }finally{await queue.close();await app.close();await host.close();}
+});
+
 test('work notes survive restart, stay separate by work and executor, and cannot overwrite host facts',async()=>{
     await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/work-memory-'));
     let host=await createFramework({root}),app=await createServer(host),queue=new TaskQueue(host,{async run(){throw Error('Do not execute while testing restored memory');}});

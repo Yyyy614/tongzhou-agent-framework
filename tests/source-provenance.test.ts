@@ -2,6 +2,25 @@ import{test,expect}from'vitest';
 import{mkdir,mkdtemp}from'node:fs/promises';import{resolve}from'node:path';import Fastify from'fastify';
 import{createFramework}from'../src/index.js';import{createServer}from'../src/server.js';import{HarnessRuntime}from'../src/runtime.js';
 import{listenHttp}from'./helpers/http-server.js';
+import{TaskQueue}from'../src/tasks.js';
+
+test('a host report acknowledgement preserves sharing of a result with only manager-visible inputs',async()=>{
+    await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/shared-report-'))}),app=await createServer(host),provider=Fastify();let calls=0,source:any;
+    provider.post('/v1/messages',async(request,reply)=>{
+        const body=request.body as any,reportTool=body.tools.find((tool:any)=>tool.name.endsWith('__work_report'));calls++;
+        const reporting=calls===1,events:any[]=[['message_start',{type:'message_start',message:{id:'shared-'+calls,type:'message',role:'assistant',model:'deepseek-flash',content:[],stop_reason:null,stop_sequence:null,usage:{input_tokens:32,output_tokens:1}}}]];
+        if(reporting)events.push(['content_block_start',{type:'content_block_start',index:0,content_block:{type:'tool_use',id:'report',name:reportTool.name,input:{}}}],['content_block_delta',{type:'content_block_delta',index:0,delta:{type:'input_json_delta',partial_json:JSON.stringify({facts:[{text:'SHARED-VERIFIED-FACT',refs:[source]}],artifacts:[],issues:[]})}}]);
+        else events.push(['content_block_start',{type:'content_block_start',index:0,content_block:{type:'text',text:''}}],['content_block_delta',{type:'content_block_delta',index:0,delta:{type:'text_delta',text:'Reported public evidence'}}]);
+        events.push(['content_block_stop',{type:'content_block_stop',index:0}],['message_delta',{type:'message_delta',delta:{stop_reason:reporting?'tool_use':'end_turn',stop_sequence:null},usage:{output_tokens:16}}],['message_stop',{type:'message_stop'}]);return reply.header('content-type','text/event-stream').send(events.map(([name,data])=>`event: ${name}\ndata: ${JSON.stringify(data)}\n\n`).join(''));
+    });await listenHttp(provider);const runtime=new HarnessRuntime(app,host,{apiKey:'fixture',upstreamURL:provider.listeningOrigin}),queue=new TaskQueue(host,runtime);
+    try{
+        await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'lead',companyId:'one',role:'admin',permissions:[]});await host.putActor({id:'alice',companyId:'one',role:'employee',permissions:['report.self.write']});await host.putAgent({id:'job',companyId:'one',ownerId:'alice',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[],servicePermissions:['report.self.write']});
+        const resource=await host.resources.create('lead',{title:'Shared reference',domain:'reference',kind:'document',body:'Public facts',access:{scope:'company',readerIds:[]},idempotencyKey:'public'});source={id:resource.id,version:1};
+        await queue.open();queue.registerRoutes(app);await listenHttp(app);const work=await host.coordination!.create('lead',{title:'Shared report',idempotencyKey:'shared',assignments:[{agentId:'job',prompt:'Report the shared reference',context:{resources:[source]}}]});await queue.startWorker();
+        await expect.poll(async()=>(await host.coordination!.get('lead',work.id)).state,{timeout:15000}).toBe('waiting_review');
+        const task=(await host.db.pool.query('SELECT id FROM tasks WHERE data->>\'workId\'=$1',[work.id])).rows[0];const result=await host.results.view('lead',task.id);expect(result!.facts).toEqual(expect.arrayContaining([expect.objectContaining({text:'SHARED-VERIFIED-FACT'})]));expect(calls).toBe(2);
+    }finally{await queue.close();await runtime.close();await app.close();await provider.close();await host.close();}
+},30000);
 
 test('a public citation cannot launder a report derived from a private actual model input',async()=>{
     await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/lineage-'))}),app=await createServer(host),provider=Fastify();

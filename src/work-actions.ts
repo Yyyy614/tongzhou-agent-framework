@@ -32,7 +32,7 @@ export class WorkActions{
             const work=(await client.query('SELECT action_scope FROM work_items WHERE id=$1',[request.workId])).rows[0];
             const key=contentHash([request.workId,work.action_scope,request.agentId,toolRef,contentHash(input)]);
             const prior=(await client.query('SELECT * FROM work_actions WHERE action_key=$1 FOR UPDATE',[key])).rows[0];
-            if(prior?.state==='succeeded'){await this.validateReceipt(toolRef,prior.data.value);await client.query('INSERT INTO audit(id,type,data) VALUES($1,$2,$3)',[randomUUID(),'work.action_reused',JSON.stringify({workId:request.workId,taskId:request.taskId,agentId:request.agentId,actionId:prior.id,runId})]);return{actionId:prior.id as string,reused:true,value:prior.data.value as T,attemptId:null};}
+            if(prior?.state==='succeeded'){if(prior.data.dependencies&&!(await host.provenance.status(request.principalId,prior.data.dependencies,client)).visible)fail('PERMISSION_DENIED','The action stays confirmed, but its receipt sources are unavailable');await this.validateReceipt(toolRef,prior.data.value);await client.query('INSERT INTO audit(id,type,data) VALUES($1,$2,$3)',[randomUUID(),'work.action_reused',JSON.stringify({workId:request.workId,taskId:request.taskId,agentId:request.agentId,actionId:prior.id,runId})]);return{actionId:prior.id as string,reused:true,value:prior.data.value as T,attemptId:null,dependencies:prior.data.dependencies};}
             if(prior&&prior.state!=='not_executed')fail('RESULT_UNKNOWN','An action is pending or uncertain; do not replay it');
             const actionId=prior?.id??randomUUID(),attemptId=randomUUID();
             if(prior)await client.query("UPDATE work_actions SET state='running',updated_at=now() WHERE id=$1",[actionId]);
@@ -40,7 +40,7 @@ export class WorkActions{
             await client.query('INSERT INTO work_action_attempts(id,action_id,task_id,run_id,state,data) VALUES($1,$2,$3,$4,$5,$6)',[attemptId,actionId,request.taskId,runId??null,'running',JSON.stringify({controlRevision:request.workControlRevision??0})]);
             return{actionId:actionId as string,attemptId,reused:false,value:undefined};
         });
-        if(admission.reused)return{value:admission.value!,reused:true,actionId:admission.actionId};
+        if(admission.reused){if(runId&&admission.dependencies)await host.provenance.add(runId,request.principalId,request.agentId,admission.dependencies);return{value:admission.value!,reused:true,actionId:admission.actionId};}
         try{
             const value=await execute();
             await this.validateReceipt(toolRef,value);

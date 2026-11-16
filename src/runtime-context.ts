@@ -91,8 +91,13 @@ export class RuntimeContext {
     }
     async receipt(name:string,input:any,result:any) {
         const call=this.pending.find(t=>!this.receipts.has(t.id)&&t.name==='mcp__company__'+name&&contentHash(t.input)===contentHash(input));
-        if(call){this.receipts.set(call.id,{content:result.content,is_error:!!result.isError});await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,[{kind:'tool',id:call.id,ownerId:this.actor.id,companyId:this.actor.companyId,digest:contentHash(result)}]);}
+        if(call){
+            this.receipts.set(call.id,{content:result.content,is_error:!!result.isError});
+            // This host acknowledgement only counts the already-attested model report.
+            // Unknown/plugin tool outputs remain private inputs, regardless of their citations.
+            if(name!=='work_report'||result.isError)await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,[{kind:'tool',id:call.id,ownerId:this.actor.id,companyId:this.actor.companyId,digest:contentHash(result)}]);
+        }
     }
     async dispatched(body:any,ordinal:number){this.requestId=await this.host.provenance.request(this.runId,this.actor.id,this.agent.id,ordinal,body,this.manifest());}
-    manifest() {return {contextPackId:this.pack.id,requestId:this.requestId,resourceRefs:[...this.pack.sources,...this.expanded],noteRefs:[...this.pack.memoryRefs,...this.memory],workMemoryRef:this.pack.workMemoryRef,historyPolicy:'host-owned-turn',workId:this.pack.workId};}
+    manifest() {return {contextPackId:this.pack.id,requestId:this.requestId,resourceRefs:[...this.pack.sources,...this.expanded],noteRefs:[...this.pack.memoryRefs,...this.memory],workMemoryRef:this.pack.workMemoryRef,toolReceipts:[...this.receipts].map(([id,receipt])=>({id,digest:contentHash(receipt)})),historyPolicy:'host-owned-turn',workId:this.pack.workId};}
 }

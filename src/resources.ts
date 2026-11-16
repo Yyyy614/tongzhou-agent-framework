@@ -71,16 +71,16 @@ export class Resources {
     private dependencies(version:any,ownerId:string):SourceOrigin[]|null{
         return version.dependencies??(version.source_refs?.some((s:string)=>/^(?:run|task):/u.test(s))?[{kind:'unknown',id:'legacy-resource',ownerId}]:null);
     }
-    private async canReadVersion(actor:Actor,row:any,version:any){const sources=this.dependencies(version,row.owner_id);return sources===null||(await this.host.provenance.status(actor.id,sources)).visible;}
+    private async versionStatus(actor:Actor,row:any,version:any,client:Pick<PoolClient,'query'>){const sources=this.dependencies(version,row.owner_id);return sources===null?{visible:true,current:true,fingerprint:null}:this.host.provenance.status(actor.id,sources,client);}
     /** Primitive origin check; inherited origins are flattened and checked separately by the host. */
-    async originStatus(principalId:string,source:SourceOrigin){
-        const actor=await this.actor(principalId),row=(await this.host.db.pool.query('SELECT * FROM company_resources WHERE id=$1',[source.id])).rows[0];
-        if(!row||!await this.canRead(actor,row))return{visible:false,current:false};
-        const version=(await this.host.db.pool.query('SELECT version FROM resource_versions WHERE resource_id=$1 AND version=$2',[source.id,source.version])).rows[0];
+    async originStatus(principalId:string,source:SourceOrigin,client:Pick<PoolClient,'query'>=this.host.db.pool){
+        const actor=await this.actor(principalId,client),row=(await client.query('SELECT * FROM company_resources WHERE id=$1',[source.id])).rows[0];
+        if(!row||!await this.canRead(actor,row,client))return{visible:false,current:false};
+        const version=(await client.query('SELECT version FROM resource_versions WHERE resource_id=$1 AND version=$2',[source.id,source.version])).rows[0];
         return{visible:!!version,current:!!version&&row.current_version===source.version&&(!source.revision||this.revision(row)===source.revision)&&(!row.valid_until||row.valid_until.getTime()>Date.now()),revision:this.revision(row)};
     }
-    private metadata(row: any, version: any) {
-        return { id: row.id, title: row.title, kind: row.kind, domain: row.domain, ownerId: row.owner_id, version: version.version, currentVersion: row.current_version, digest: version.digest, revision: this.revision(row), access: row.access, updatedAt: row.updated_at, freshness: row.valid_until && row.valid_until.getTime() <= Date.now() ? 'expired' : version.version === row.current_version ? 'current' : 'superseded' };
+    private metadata(row: any, version: any,status?:{current:boolean;fingerprint:string|null}) {
+        return { id: row.id, title: row.title, kind: row.kind, domain: row.domain, ownerId: row.owner_id, version: version.version, currentVersion: row.current_version, digest: version.digest, revision: this.revision(row),sourceAuthority:status?.fingerprint??null,derivedValidity:status&&!status.current?'source-changed':'current', access: row.access, updatedAt: row.updated_at, freshness: row.valid_until && row.valid_until.getTime() <= Date.now() ? 'expired' : version.version === row.current_version ? 'current' : 'superseded' };
     }
     private async reading<T>(read:(client:PoolClient)=>Promise<T>){const client=await this.host.db.pool.connect();try{await client.query('BEGIN');await this.host.organization.lock(client);const value=await read(client);await client.query('COMMIT');return value;}catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}}
     private async retained(id:string){
@@ -95,7 +95,7 @@ export class Resources {
             await client.query('BEGIN'); await this.host.organization.lock(client);
             const actor = await this.actor(principalId, client); await this.checkAccess(actor, input.access, client);
             if(derivation?.retentionOnly&&(input.access.scope!=='personal'||input.access.readerIds.length||input.access.workId))fail('INVALID_INPUT','Retained process data must remain private');
-            if(derivation&&!derivation.retentionOnly){const status=await this.host.provenance.status(actor.id,derivation.sources);if(!status.visible)fail('CONFLICT','Derived resource source access changed');}
+            if(derivation&&!derivation.retentionOnly){const status=await this.host.provenance.status(actor.id,derivation.sources,client);if(!status.visible)fail('CONFLICT','Derived resource source access changed');}
             const key = contentHash([actor.companyId, actor.id, input.idempotencyKey]), hash = contentHash(input);
             await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [key]);
             const prior = (await client.query('SELECT * FROM company_resources WHERE request_key=$1', [key])).rows[0];
@@ -114,8 +114,8 @@ export class Resources {
         if (!row || !await this.canRead(actor, row,client)) fail('NOT_FOUND', 'Resource is unavailable');
         const data = (await client.query('SELECT * FROM resource_versions WHERE resource_id=$1 AND version=$2', [id, version ?? row.current_version])).rows[0];
         if (!data) fail('NOT_FOUND', 'Resource version is unavailable');
-        if(!await this.canReadVersion(actor,row,data))fail('NOT_FOUND','Resource is unavailable');
-        return { ...this.metadata(row, data),resourceRef:{id:row.id,version:data.version}, body: data.body.slice(offset, offset + limit), offset, nextOffset: offset + limit < data.body.length ? offset + limit : null, totalChars: data.body.length, sourceRefs: data.source_refs };
+        const status=await this.versionStatus(actor,row,data,client);if(!status.visible)fail('NOT_FOUND','Resource is unavailable');
+        return { ...this.metadata(row, data,status),resourceRef:{id:row.id,version:data.version}, body: data.body.slice(offset, offset + limit), offset, nextOffset: offset + limit < data.body.length ? offset + limit : null, totalChars: data.body.length, sourceRefs: data.source_refs };
         });
     }
     private async visibleWorks(actor:Actor,client:PoolClient){
@@ -144,12 +144,12 @@ export class Resources {
                 AND (r.title ILIKE $5 OR v.body ILIKE $5) AND ($6::text IS NULL OR r.domain=$6) AND ($6::text IS NOT NULL OR r.domain<>'work-process')
                 AND ($7::timestamptz IS NULL OR r.updated_at<$7 OR r.updated_at=$7 AND r.id>$8::uuid)
               ORDER BY r.updated_at DESC,r.id LIMIT 200`,[actor.companyId,actor.id,actor.departmentId??null,workIds,'%'+query.replaceAll('\\','\\\\').replaceAll('%','\\%').replaceAll('_','\\_')+'%',domain??null,after?.at??null,after?.id??null])).rows;
-            for(const row of rows)if(await this.canRead(actor,row,client)&&await this.canReadVersion(actor,row,row)){found.push(row);if(found.length>limit)break;}
+            for(const row of rows)if(await this.canRead(actor,row,client)){const status=await this.versionStatus(actor,row,row,client);if(status.visible){row.dependency_status=status;found.push(row);if(found.length>limit)break;}}
             if(found.length>limit||rows.length<200)break;
             const last=rows.at(-1)!;after={at:last.cursor_at,id:last.id};
         }
         const items=found.slice(0,limit),last=items.at(-1),limited=found.length>limit;
-        return { items: items.map(row => this.metadata(row, row)), asOf: new Date().toISOString(), coverage: 'authorized-resources', limited,hasMore:limited,nextCursor:limited&&last?Buffer.from(JSON.stringify({key,at:last.cursor_at,id:last.id})).toString('base64url'):null };
+        return { items: items.map(row => this.metadata(row, row,row.dependency_status)), asOf: new Date().toISOString(), coverage: 'authorized-resources', limited,hasMore:limited,nextCursor:limited&&last?Buffer.from(JSON.stringify({key,at:last.cursor_at,id:last.id})).toString('base64url'):null };
         });
     }
     async update(principalId: string, id: string, input: { revision: string; body?: string; sourceRefs?: string[]; access?: ResourceAccess }) {
@@ -199,7 +199,7 @@ export class Resources {
             const available = Math.max(0, maxChars - modelContext.length - header.length), body = resource.body.slice(0, available);
             if (body.length) modelContext += header + body;
             truncated ||= body.length < resource.totalChars;
-            sources.push({ id: resource.id, version: resource.version, digest: resource.digest, revision: resource.revision, includedChars: body.length });
+            sources.push({ id: resource.id, version: resource.version, digest: resource.digest, revision: resource.revision,sourceAuthority:resource.sourceAuthority, includedChars: body.length });
         }
         const memoryRefs: any[] = [];
         for (const noteId of input.noteIds ?? []) {
@@ -218,7 +218,7 @@ export class Resources {
         await this.host.authorize(actor.id, row.agent_id);
         for (const ref of row.data.sources) {
             const current = await this.read(actor.id, ref.id);
-            if (current.version !== ref.version || current.digest !== ref.digest || current.revision !== ref.revision || current.freshness !== 'current') fail('CONFLICT', 'ContextPack source changed; assemble again');
+            if (current.version !== ref.version || current.digest !== ref.digest || current.revision !== ref.revision || current.sourceAuthority!==(ref.sourceAuthority??null)||current.freshness !== 'current') fail('CONFLICT', 'ContextPack source changed; assemble again');
         }
         for (const ref of row.data.memoryRefs) if ((await this.host.readMemory({ principalId: actor.id, agentId: row.agent_id, noteId: ref.noteId })).version !== ref.version) fail('CONFLICT', 'ContextPack memory source changed');
         if(row.data.workMemoryRef){const ref=row.data.workMemoryRef,current=await this.host.workMemory.read(actor.id,ref.workId,row.agent_id);if(current.revision!==ref.revision||current.visibility!=='private-work-memory')fail('CONFLICT','ContextPack work memory changed');}

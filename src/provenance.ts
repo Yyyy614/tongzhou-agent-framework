@@ -3,6 +3,8 @@ import type {Framework} from './index.js';
 import type {Actor} from './types.js';
 import {contentHash} from './contracts.js';
 import {fail} from './errors.js';
+import type{PoolClient}from'pg';
+type Query=Pick<PoolClient,'query'>;
 
 export interface SourceOrigin {
     kind:'resource'|'memory'|'input'|'tool'|'unknown'|'work-memory';
@@ -31,30 +33,32 @@ export class SourceProvenance {
         const task=(await this.host.db.pool.query("SELECT t.principal_id FROM runs r JOIN tasks t ON t.id::text=r.data->>'taskId' WHERE r.id=$1 AND r.principal_id=$2 AND t.data->>'executionPrincipalId'=$2 AND t.agent_id=$3",[runId,actor.id,agentId])).rows[0];
         return{kind:'input',id:runId,ownerId:actor.id,companyId:actor.companyId,agentId,readerIds:task?[task.principal_id]:[],digest:contentHash(input)};
     }
-    async resourceOrigins(value:any):Promise<SourceOrigin[]>{
-        const version=(await this.host.db.pool.query('SELECT dependencies,source_refs,created_by FROM resource_versions WHERE resource_id=$1 AND version=$2',[value.id,value.version])).rows[0];
+    async resourceOrigins(value:any,client:Query=this.host.db.pool):Promise<SourceOrigin[]>{
+        const version=(await client.query('SELECT dependencies,source_refs,created_by FROM resource_versions WHERE resource_id=$1 AND version=$2',[value.id,value.version])).rows[0];
         if(!version)fail('NOT_FOUND','Resource origin is unavailable');
         const inherited=version.dependencies??(version.source_refs.some((s:string)=>/^(?:run|task):/u.test(s))?[{kind:'unknown',id:value.id,ownerId:version.created_by}]:[]);
         return [{kind:'resource',id:value.id,version:value.version,revision:value.revision},...inherited];
     }
-    async status(principalId:string,sources:SourceOrigin[]|null|undefined){
-        if(!sources)return{visible:false,current:false};
-        const actor=await this.host.db.get<Actor>('actors',principalId);if(!actor.active)return{visible:false,current:false};
-        let current=true;
+    async status(principalId:string,sources:SourceOrigin[]|null|undefined,client:Query=this.host.db.pool){
+        if(!sources)return{visible:false,current:false,fingerprint:null};
+        const actor=await this.host.db.get<Actor>('actors',principalId,client);if(!actor.active)return{visible:false,current:false,fingerprint:null};
+        let current=true;const stamps:unknown[]=[];
         for(const source of sources){
             if(source.kind==='resource'){
-                const status=await this.host.resources.originStatus(actor.id,source);
-                if(!status.visible)return{visible:false,current:false};current&&=status.current;
+                const status=await this.host.resources.originStatus(actor.id,source,client);
+                if(!status.visible)return{visible:false,current:false,fingerprint:null};current&&=status.current;stamps.push([source.id,status.revision]);
             }else if(source.kind==='memory'){
-                try{const note=await this.host.readMemory({principalId:actor.id,agentId:source.agentId!,noteId:source.id});current&&=note.version===source.version;}
-                catch(error){if(['PERMISSION_DENIED','NOT_FOUND'].includes((error as any).code))return{visible:false,current:false};throw error;}
-            }else if(source.companyId&&source.companyId!==actor.companyId)return{visible:false,current:false};
+                try{const scope=await this.host.authorizeMemory(actor.id,source.agentId!,'read',client),note=(await client.query('SELECT version FROM memories WHERE agent_id=$1 AND note_id=$2',[source.agentId,source.id])).rows[0];if(!note)return{visible:false,current:false,fingerprint:null};current&&=note.version===source.version;stamps.push([source.agentId,source.id,note.version,contentHash(scope.actor),contentHash(scope.agent)]);}
+                catch(error){if(['PERMISSION_DENIED','NOT_FOUND'].includes((error as any).code))return{visible:false,current:false,fingerprint:null};throw error;}
+            }else if(source.kind==='work-memory'){
+                const status=await this.host.workMemory.originStatus(actor.id,source,client);if(!status.visible)return{visible:false,current:false,fingerprint:null};stamps.push([source.id,source.agentId,status.authority]);
+            }else if(source.companyId&&source.companyId!==actor.companyId)return{visible:false,current:false,fingerprint:null};
             else if(source.ownerId!==actor.id){
-                if(!source.readerIds?.includes(actor.id)||!source.agentId)return{visible:false,current:false};
-                try{await this.host.organization.authorizeAgent(actor.id,source.agentId,'read');}catch(error){if((error as any).code==='PERMISSION_DENIED')return{visible:false,current:false};throw error;}
+                if(!source.readerIds?.includes(actor.id)||!source.agentId)return{visible:false,current:false,fingerprint:null};
+                try{await this.host.organization.authorizeAgent(actor.id,source.agentId,'read',client);}catch(error){if((error as any).code==='PERMISSION_DENIED')return{visible:false,current:false,fingerprint:null};throw error;}
             }
         }
-        return{visible:true,current};
+        return{visible:true,current,fingerprint:contentHash(stamps)};
     }
     async request(runId:string,principalId:string,agentId:string,ordinal:number,body:unknown,manifest:any){
         const sources=await this.snapshot(runId);if(!sources)fail('CONFLICT','Model request has no host source ledger');

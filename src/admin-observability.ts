@@ -56,7 +56,7 @@ export function registerAdminObservability(api: FastifyInstance, host: Framework
         const indexed = new Map(numeric(series.rows).map(r => [r.day, r]));
         const format = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
         const filled = Array.from({ length: days }, (_, i) => { const day = format.format(new Date(Date.now() - (days - 1 - i) * 86400000)); return indexed.get(day) ?? { day, requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 }; });
-        for(const row of records.rows)if(row.data.principalId!==(request as any).principalId&&row.data.contextManifest){const {resourceRefs,noteRefs,...safe}=row.data.contextManifest;row.data.contextManifest={...safe,sourceVisibility:'only-in-authorized-context-detail'};}
+        for(const row of records.rows)if(row.data.principalId!==(request as any).principalId&&row.data.contextManifest){const {resourceRefs,noteRefs,workMemoryRef,...safe}=row.data.contextManifest;row.data.contextManifest={...safe,sourceVisibility:'only-in-authorized-context-detail'};}
         return { days, timeZone: 'Asia/Shanghai', totals: numeric(totals.rows)[0], series: filled, byEmployee: numeric(byEmployee.rows), byAgent: numeric(byAgent.rows), records: records.rows, priceStatus: 'unconfigured', recordsLimit: 100 };
     });
     api.get('/overview', async (request) => {
