@@ -285,6 +285,7 @@ export class EventRouting {
             const source = (await client.query('SELECT * FROM event_sources WHERE id=$1', [event.source_id])).rows[0], owner = await this.actor(source.owner_id, client), originator = await this.actor(event.principal_id, client);
             await this.originAuthority(source,event,client);
             if(eventId!==work.data.originEventId&&(event.data.input.conversationId||event.data.input.subjectRef||event.data.input.workId||event.data.manualDecision?.workId))await this.links.participate(originator.id,workId,client);
+            if(eventId!==work.data.originEventId&&!event.data.input.workId&&!event.data.manualDecision?.workId){const objectRelation=!!event.data.input.subjectRef||!!(await client.query('SELECT 1 FROM event_subscriptions WHERE source_id=$1 AND principal_id=$2 AND work_id=$3 AND correlation_key IS NOT NULL AND active=true',[source.id,originator.id,workId])).rowCount;if(!await this.links.automaticPolicy(source,event,workId,client,objectRelation))fail('CANCELLED','Automatic association policy was revoked');}
             if (!source.data.enabled || source.data.mode !== 'execute' || owner.role !== 'admin' || owner.companyId !== source.company_id || originator.companyId !== source.company_id || source.data.allowedPrincipalIds.length && !source.data.allowedPrincipalIds.includes(originator.id) || !(await this.candidates(source, event, client)).some(c => c.agentId === agentId)) fail('CANCELLED', 'Company event source authority was revoked');
         }
     }
