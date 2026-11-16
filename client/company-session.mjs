@@ -192,14 +192,18 @@ export async function createCompanySession({ serverURL, dataDir, protection, run
                 if(kind==='experience-list')return request('/v1/experiences');
                 if(kind==='experience-validate')return request('/v1/experiences/'+id+'/validate','POST',input);
                 if(kind==='experience-submit')return request('/v1/experiences/'+id+'/submit','POST',input);
-                if(['context-latest','context-history','context-read','context-usage','work-memory-read','work-memory-save','work-memory-rebuild','resource-notifications','resource-subscribe','resource-recall','experience-create','memory-domains'].includes(kind)){
+                if(['context-latest','context-history','context-read','context-usage','work-memory-read','work-memory-save','work-memory-rebuild','work-memory-history','work-memory-organize','source-set-read','work-recipient-summary','resource-notifications','resource-subscribe','resource-recall','experience-create','memory-domains'].includes(kind)){
                     if(!active?.started||active.released)throw failure('JOB_REQUIRED','请先进入自己的工作岗位');const agentId=active.lease.agentId;
                     if(kind==='memory-domains')return request('/v1/memory-domains');
                     if(kind==='context-latest')return request('/v1/agents/'+agentId+'/context-latest');
                     if(kind==='context-history')return request('/v1/agents/'+agentId+'/context-history');
                     if(kind==='context-read'){const record=await request('/v1/model-contexts/'+id);if(record.agentId!==agentId)throw failure('PERMISSION_DENIED','请选择该记录所属岗位');return record;}
                     if(kind==='context-usage')return request('/v1/agents/'+agentId+'/context-usage');
-                    if(kind==='work-memory-read')return request('/v1/work/'+id+'/memory/'+agentId);
+                    if(kind==='work-memory-read')return request('/v1/work/'+id+'/memory/'+agentId+(input?.revision?'?revision='+Number(input.revision):''));
+                    if(kind==='work-memory-history')return request('/v1/work/'+id+'/memory/'+agentId+'/history?limit=20'+(input?.cursor?'&cursor='+encodeURIComponent(input.cursor):''));
+                    if(kind==='work-memory-organize')return request('/v1/work/'+id+'/memory/'+agentId+'/organize','POST',input);
+                    if(kind==='source-set-read')return request('/v1/source-sets/'+id+'?limit=20'+(input?.cursor?'&cursor='+encodeURIComponent(input.cursor):''));
+                    if(kind==='work-recipient-summary')return request('/v1/work/'+id+'/recipient-summary','POST',{});
                     if(kind==='work-memory-save')return request('/v1/work/'+id+'/memory/'+agentId,'PUT',input);
                     if(kind==='work-memory-rebuild')return request('/v1/work/'+id+'/memory/'+agentId+'/rebuild-request','POST',input);
                     if(kind==='resource-notifications')return request('/v1/agents/'+agentId+'/resource-notifications');
