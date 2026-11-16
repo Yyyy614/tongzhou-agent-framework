@@ -38,11 +38,11 @@ export class WorkMemory {
         if(!snapshot)fail('UNAVAILABLE','Work coordination is unavailable');
         const facts={state:snapshot.state,round:work.current_round,controlMode:work.control_mode,controlRevision:work.control_revision,origin:'host-confirmed',notice:'工作笔记不会改变审批、执行状态或动作回执。'};
         if(!own&&!actor.permissions.includes('work.memory.read:'+agent.id))return{workId,agentId,title:work.data.title,facts,note:null,revision:undefined,memoryRef:undefined,visibility:'control-only' as const,resultRefs:[]};
-        const row=await this.latest(workId,agentId,agent.ownerId),allowed=row?(await this.host.provenance.status(actor.id,row.dependencies)).visible:true;
+        const row=await this.latest(workId,agentId,agent.ownerId),sourceStatus=row?await this.host.provenance.status(actor.id,row.dependencies):{visible:true,current:true,fingerprint:null},allowed=sourceStatus.visible;
         const results=(await this.host.db.pool.query("SELECT t.id,t.state,r.process_ref FROM tasks t LEFT JOIN task_results r ON r.task_id=t.id WHERE t.agent_id=$1 AND t.data->>'workId'=$2 AND t.data->>'executionPrincipalId'=$3 ORDER BY t.created_at DESC LIMIT 8",[agent.id,workId,agent.ownerId])).rows;
         const resultRefs=[];for(const result of results){if(!result.process_ref)continue;try{const source=await this.host.resources.read(actor.id,result.process_ref.id,result.process_ref.version,0,1);resultRefs.push({taskId:result.id,state:result.state,ref:source.resourceRef});}catch(error){if((error as any).code!=='NOT_FOUND')throw error;}}
         const note:WorkNote=allowed&&row?row.data:{goal:work.data.title,decisions:[],blockers:[],nextSteps:[],artifacts:[]};
-        return{workId,agentId,title:work.data.title,facts,revision:row?.revision??0,note,visibility:allowed?'private-work-memory':'sources-unavailable',resultRefs,...(row?{memoryRef:{id:row.id,revision:row.revision},updatedAt:row.created_at}:{}),origin:'agent-reported'};
+        return{workId,agentId,title:work.data.title,facts,revision:row?.revision??0,note,visibility:allowed?'private-work-memory':'sources-unavailable',sourceAuthority:sourceStatus.fingerprint,derivedValidity:sourceStatus.current?'current':'source-changed',resultRefs,...(row?{memoryRef:{id:row.id,revision:row.revision},updatedAt:row.created_at}:{}),origin:'agent-reported'};
     }
     async save(principalId:string,workId:string,agentId:string,input:WorkNoteWrite,derivation?:SourceOrigin[]){
         if(!this.host.registry.ajv.validate(workNoteSchema,input)||JSON.stringify(input).length>16000)fail('INVALID_INPUT','Invalid bounded work note');
@@ -91,14 +91,14 @@ export class WorkMemory {
     }
     async compact(principalId:string,workId:string,agentId:string,maxChars=2800){
         const current=await this.read(principalId,workId,agentId),note=current.note;
-        const value:any={workId,facts:current.facts,goal:note?.goal??current.title,decisions:[],blockers:[],nextSteps:[],artifacts:[],resultRefs:[],noteRef:current.memoryRef??null,omissions:[],readMore:'/v1/work/'+workId+'/memory/'+agentId};
+        const value:any={workId,facts:current.facts,goal:note?.goal??current.title,sourceValidity:'derivedValidity' in current?current.derivedValidity:'control-only',decisions:[],blockers:[],nextSteps:[],artifacts:[],resultRefs:[],noteRef:current.memoryRef??null,omissions:[],readMore:'/v1/work/'+workId+'/memory/'+agentId};
         const sections=(['decisions','blockers','nextSteps','artifacts','resultRefs'] as const).map(field=>({field,candidates:field==='resultRefs'?current.resultRefs:note?.[field]??[]}));
         value.omissions=sections.filter(s=>s.candidates.length).map(s=>({section:s.field,count:s.candidates.length,reason:'budget',continuation:value.readMore}));
         if(JSON.stringify(value).length>maxChars)fail('CONTEXT_BUDGET_EXCEEDED','Required work state and continuation references do not fit the memory budget');
         for(const {field,candidates} of sections){
             for(const item of candidates){const previous=structuredClone(value.omissions);value[field].push(item);const omitted=value.omissions.find((o:any)=>o.section===field);if(omitted&&!--omitted.count)value.omissions=value.omissions.filter((o:any)=>o!==omitted);if(JSON.stringify(value).length>maxChars){value[field].pop();value.omissions=previous;}}
         }
-        return{text:JSON.stringify(value),ref:current.memoryRef?{workId,agentId,revision:current.revision}:null,resultRefs:value.resultRefs,omissions:value.omissions};
+        return{text:JSON.stringify(value),ref:current.revision!==undefined&&current.visibility==='private-work-memory'?{workId,agentId,revision:current.revision,sourceAuthority:current.sourceAuthority??null}:null,resultRefs:value.resultRefs,omissions:value.omissions};
     }
     async recordResult(task:any,runId:string,processRef:ResourceRef){
         if(!task.data.workId)return;

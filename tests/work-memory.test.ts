@@ -22,7 +22,9 @@ test('work notes survive restart, stay separate by work and executor, and cannot
         const alice={authorization:'Bearer '+await host.issueAccessToken('alice')},admin={authorization:'Bearer '+await host.issueAccessToken('admin')},bob={authorization:'Bearer '+await host.issueAccessToken('bob')};
         const note={expectedRevision:0,idempotencyKey:'save-a',goal:'Finish reference organization',decisions:[{text:'DECISION-ONLY-A',refs:[]}],blockers:[],nextSteps:[{text:'Review missing pages',refs:[]}],artifacts:[]};
         const url='/v1/work/'+a.id+'/memory/alice-job';
+        const emptyPack=await host.resources.context('alice','alice-job',{resources:[],workId:a.id});expect(emptyPack.workMemoryRef?.revision).toBe(0);
         const saved=await app.inject({url,method:'PUT',headers:alice,payload:note});expect(saved.statusCode).toBe(200);expect(saved.json().revision).toBe(1);expect(saved.json().facts.state).toBe('queued');
+        await expect(host.resources.pack('alice',emptyPack.id)).rejects.toMatchObject({code:'CONFLICT'});
         expect((await app.inject({url,method:'PUT',headers:alice,payload:note})).json().revision).toBe(1);
         expect((await app.inject({url,method:'PUT',headers:alice,payload:{...note,idempotencyKey:'stale'}})).statusCode).toBe(409);
         expect((await app.inject({url,method:'PUT',headers:alice,payload:{...note,expectedRevision:1,idempotencyKey:'forge',facts:{state:'completed'}}})).statusCode).toBe(400);

@@ -40,9 +40,11 @@ test('notes cannot drop inherited origins and work-memory origins follow current
         const work=await host.coordination!.create('admin',{title:'Generic work',idempotencyKey:'one',assignments:[{agentId:'job',prompt:'Organize'}]}),source=await host.resources.create('bob',{title:'Shared source',kind:'document',domain:'validation',body:'PRIVATE-SOURCE',access:{scope:'personal',readerIds:['alice']},idempotencyKey:'source'});
         const note={goal:'Goal',decisions:[{text:'Private decision',refs:[{id:source.id,version:1}]}],blockers:[],nextSteps:[],artifacts:[],expectedRevision:0,idempotencyKey:'first'};await host.workMemory.save('alice',work.id,'job',note);
         const origin=await host.workMemory.origin('alice',work.id,'job');const derived=await host.resources.create('alice',{title:'Note-derived',kind:'artifact',domain:'validation',body:'private derived',access:{scope:'personal',readerIds:[]},idempotencyKey:'derived'},{sources:[origin!.ref,...origin!.sources]});
+        const pack=await host.resources.context('alice','job',{resources:[],workId:work.id});
         const revoked=await host.resources.update('bob',source.id,{revision:source.revision,access:{scope:'personal',readerIds:[]}});
         await expect(host.workMemory.save('alice',work.id,'job',{...note,expectedRevision:1,idempotencyKey:'wash',decisions:[{text:'Private decision',refs:[]}]})).rejects.toMatchObject({code:'NOT_FOUND'});
         await host.resources.update('bob',source.id,{revision:revoked.revision,access:{scope:'personal',readerIds:['alice']}});
+        await expect(host.resources.pack('alice',pack.id)).rejects.toMatchObject({code:'CONFLICT'});
         const job=await host.db.get<any>('agents','job');await host.putAgent({...job,ownerId:'bob'});
         await expect(host.workMemory.read('alice',work.id,'job')).rejects.toMatchObject({code:'PERMISSION_DENIED'});await expect(host.resources.read('alice',derived.id)).rejects.toMatchObject({code:'NOT_FOUND'});
     }finally{await queue.close();await app.close();await host.close();}

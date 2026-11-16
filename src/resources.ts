@@ -221,7 +221,7 @@ export class Resources {
             if (current.version !== ref.version || current.digest !== ref.digest || current.revision !== ref.revision || current.sourceAuthority!==(ref.sourceAuthority??null)||current.freshness !== 'current') fail('CONFLICT', 'ContextPack source changed; assemble again');
         }
         for (const ref of row.data.memoryRefs) if ((await this.host.readMemory({ principalId: actor.id, agentId: row.agent_id, noteId: ref.noteId })).version !== ref.version) fail('CONFLICT', 'ContextPack memory source changed');
-        if(row.data.workMemoryRef){const ref=row.data.workMemoryRef,current=await this.host.workMemory.read(actor.id,ref.workId,row.agent_id);if(current.revision!==ref.revision||current.visibility!=='private-work-memory')fail('CONFLICT','ContextPack work memory changed');}
+        if(row.data.workMemoryRef){const ref=row.data.workMemoryRef,current=await this.host.workMemory.read(actor.id,ref.workId,row.agent_id);if(current.revision!==ref.revision||current.visibility!=='private-work-memory'||(current.sourceAuthority??null)!==(ref.sourceAuthority??null))fail('CONFLICT','ContextPack work memory changed');}
         if (row.data.workId) { const work = await this.host.coordination?.get(actor.id, row.data.workId); if (!work || this.workFence(work) !== row.data.workRevision) fail('CONFLICT', 'ContextPack work authority changed'); }
         return { id, agentId: row.agent_id, ...row.data, createdAt: row.created_at };
     }
