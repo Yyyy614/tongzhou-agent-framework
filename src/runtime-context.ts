@@ -72,8 +72,11 @@ export class RuntimeContext {
         await this.trackPack(next);
         const split=this.system.lastIndexOf('ContextPack '+this.pack.id+'\n');this.system=this.system.slice(0,split)+'ContextPack '+next.id+'\n'+next.modelContext;this.pack=next;
     }
-    async wroteWorkMemory(){
+    async wroteWorkMemory(saved:any){
         if(!this.pack.workId)return;
+        if(saved.workId!==this.pack.workId||saved.agentId!==this.agent.id||!Number.isInteger(saved.revision))fail('CONFLICT','Work note receipt does not match this context');
+        await this.host.provenance.acceptWorkRevision(this.runId,this.actor.id,this.agent.id,this.pack.workId,saved.revision);
+        const latest=await this.host.workMemory.read(this.actor.id,this.pack.workId,this.agent.id);if(latest.revision!==saved.revision)fail('CONFLICT','Another revision superseded this save; refresh the work context');
         const note=await this.host.workMemory.origin(this.actor.id,this.pack.workId,this.agent.id);if(note)await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,[note.ref,...note.sources]);
         const next=await this.host.resources.context(this.actor.id,this.agent.id,{resources:this.pack.sources.filter((r:any)=>r.includedChars>0).map((r:any)=>({id:r.id,version:r.version})),query:this.pack.query,noteIds:this.pack.memoryRefs.map((n:any)=>n.noteId),workId:this.pack.workId,maxChars:this.pack.maxChars});
         await this.trackPack(next);

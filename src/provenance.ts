@@ -10,6 +10,8 @@ type Query=Pick<PoolClient,'query'>;
 export interface SourceOrigin {
     kind:'resource'|'memory'|'input'|'tool'|'unknown'|'work-memory';
     id:string;version?:number;revision?:string;agentId?:string;ownerId?:string;companyId?:string;digest?:string;readerIds?:string[];
+    /** Host-generated revision ancestry; never accepted from tools or client declarations. */
+    relation?:'revision-history';
 }
 /** Immutable input origins are recorded by host adapters, never accepted from a model report. */
 export class SourceProvenance {
@@ -17,6 +19,7 @@ export class SourceProvenance {
     async open(){await this.host.db.pool.query(`
       CREATE TABLE IF NOT EXISTS execution_sources(run_id text PRIMARY KEY,company_id text NOT NULL,principal_id text NOT NULL,agent_id text NOT NULL,sources jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now());
       CREATE TABLE IF NOT EXISTS model_context_requests(id uuid PRIMARY KEY,run_id text NOT NULL,principal_id text NOT NULL,agent_id text NOT NULL,ordinal integer NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(run_id,ordinal));
+      CREATE TABLE IF NOT EXISTS execution_work_revisions(run_id text NOT NULL,work_id uuid NOT NULL,agent_id text NOT NULL,owner_id text NOT NULL,revision integer NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(run_id,work_id,agent_id,owner_id,revision));
     `);}
     unique(sources:SourceOrigin[]){return [...new Map(sources.map(s=>[contentHash(s),s])).values()];}
     async add(runId:string,principalId:string,agentId:string,sources:SourceOrigin[]){
@@ -29,7 +32,21 @@ export class SourceProvenance {
             await client.query('UPDATE execution_sources SET sources=$2,updated_at=now() WHERE run_id=$1',[runId,JSON.stringify(next)]);await client.query('COMMIT');
         }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
     }
-    async snapshot(runId:string,client:Query=this.host.db.pool){return (await client.query('SELECT sources FROM execution_sources WHERE run_id=$1',[runId])).rows[0]?.sources as SourceOrigin[]|undefined;}
+    async snapshot(runId:string,client:Query=this.host.db.pool){
+        const row=(await client.query('SELECT sources FROM execution_sources WHERE run_id=$1',[runId])).rows[0];if(!row)return undefined;
+        const revisions=(await client.query('SELECT work_id,agent_id,owner_id,max(revision)::integer AS revision FROM execution_work_revisions WHERE run_id=$1 GROUP BY work_id,agent_id,owner_id',[runId])).rows;
+        return(row.sources as SourceOrigin[]).map(source=>source.kind==='work-memory'&&revisions.some(r=>r.work_id===source.id&&r.agent_id===source.agentId&&r.owner_id===source.ownerId&&source.version!<r.revision)?{...source,relation:'revision-history' as const}:source);
+    }
+    async acceptWorkRevision(runId:string,principalId:string,agentId:string,workId:string,revision:number){
+        const client=await this.host.db.pool.connect();try{await client.query('BEGIN');await this.host.organization.lock(client);const{actor,agent}=await this.host.authorize(principalId,agentId,'execute',client);
+            const note=(await client.query('SELECT * FROM work_memory_versions WHERE work_id=$1 AND agent_id=$2 AND principal_id=$3 AND revision=$4',[workId,agentId,actor.id,revision])).rows[0];
+            if(!note||agent.ownerId!==actor.id||note.written_by_run!==runId)fail('CONFLICT','Only this run\'s confirmed note revision can refresh its context');
+            const ledger=(await client.query('SELECT * FROM execution_sources WHERE run_id=$1 FOR UPDATE',[runId])).rows[0];if(!ledger||ledger.principal_id!==actor.id||ledger.agent_id!==agentId)fail('PERMISSION_DENIED','Run source scope unavailable');
+            const next=this.unique([...ledger.sources,{kind:'work-memory',id:workId,agentId,ownerId:actor.id,version:revision},...note.dependencies]);if(next.length>512)fail('CONTEXT_BUDGET_EXCEEDED','Run source expansion limit reached');
+            await client.query('UPDATE execution_sources SET sources=$2,updated_at=now() WHERE run_id=$1',[runId,JSON.stringify(next)]);
+            await client.query('INSERT INTO execution_work_revisions(run_id,work_id,agent_id,owner_id,revision) VALUES($1,$2,$3,$4,$5) ON CONFLICT DO NOTHING',[runId,workId,agentId,actor.id,revision]);await client.query('COMMIT');
+        }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+    }
     async resultAccess(principalId:string,sources:SourceOrigin[]|null|undefined,client:Query=this.host.db.pool){
         if(!sources?.length||sources.some(s=>s.kind==='unknown'))return{visible:false,current:false,fingerprint:null,visibility:'unknown',validity:'unknown',notice:'来源账本缺失，派生正文受限；执行记录和控制状态保留。'};
         const status=await this.status(principalId,sources,client);
@@ -62,7 +79,10 @@ export class SourceProvenance {
                 try{const scope=await this.host.authorizeMemory(actor.id,source.agentId!,'read',client),note=(await client.query('SELECT version FROM memories WHERE agent_id=$1 AND note_id=$2',[source.agentId,source.id])).rows[0],version=(await client.query('SELECT principal_id,dependencies FROM memory_versions WHERE agent_id=$1 AND note_id=$2 AND version=$3',[source.agentId,source.id,source.version])).rows[0];if(!note||!version||version.principal_id!==scope.agent.ownerId||source.ownerId&&source.ownerId!==version.principal_id)return{visible:false,current:false,fingerprint:null};const key=source.agentId+':'+source.id+':'+source.version;if(path.has(key)||path.size>64)return{visible:false,current:false,fingerprint:null};const nested=await this.status(actor.id,version.dependencies,client,new Set([...path,key]));if(!nested.visible)return{visible:false,current:false,fingerprint:null};current&&=note.version===source.version&&nested.current;stamps.push([source.agentId,source.id,note.version,nested.fingerprint,nested.current,contentHash(scope.actor),contentHash(scope.agent)]);}
                 catch(error){if(['PERMISSION_DENIED','NOT_FOUND'].includes((error as any).code))return{visible:false,current:false,fingerprint:null};throw error;}
             }else if(source.kind==='work-memory'){
-                const status=await this.host.workMemory.originStatus(actor.id,source,client);if(!status.visible)return{visible:false,current:false,fingerprint:null};stamps.push([source.id,source.agentId,status.authority]);
+                const key='work:'+source.agentId+':'+source.id+':'+source.version;if(path.has(key)||path.size>=64)return{visible:false,current:false,fingerprint:null};
+                const status=await this.host.workMemory.originStatus(actor.id,source,client);if(!status.visible)return{visible:false,current:false,fingerprint:null};
+                const nested=await this.status(actor.id,status.dependencies,client,new Set([...path,key]));if(!nested.visible)return{visible:false,current:false,fingerprint:null};
+                current&&=(source.relation==='revision-history'||status.current===true)&&nested.current;stamps.push([source.id,source.agentId,status.authority,nested.fingerprint,source.relation??'current']);
             }else if(source.companyId&&source.companyId!==actor.companyId)return{visible:false,current:false,fingerprint:null};
             else if(source.ownerId!==actor.id){
                 if(!source.readerIds?.includes(actor.id)||!source.agentId)return{visible:false,current:false,fingerprint:null};

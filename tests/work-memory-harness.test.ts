@@ -4,7 +4,7 @@ import{createFramework}from'../src/index.js';import{createServer}from'../src/ser
 test('native model requests restore bounded work notes and persisted entry bindings without importing another work',async()=>{
     await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/work-context-'))}),app=await createServer(host),provider=Fastify();const bodies:any[]=[];
     const updatedNote={expectedRevision:1,goal:'Goal A',decisions:[{text:'KEEP-ONLY-A',refs:[]}],blockers:[],nextSteps:[{text:'PERSISTED-NEXT-ACTION',refs:[]}],artifacts:[]};
-    provider.post('/v1/messages',req=>{bodies.push(req.body);const writing=bodies.length===3;return{id:'fixture',type:'message',role:'assistant',content:writing?[{type:'tool_use',id:'save-note',name:'mcp__company__work_memory_save',input:updatedNote}]:[{type:'text',text:'Restored authorized work'}],stop_reason:writing?'tool_use':'end_turn',usage:{input_tokens:24,output_tokens:8}};});await listenHttp(provider);
+    provider.post('/v1/messages',req=>{bodies.push(req.body);const writing=[3,5,7].includes(bodies.length);return{id:'fixture',type:'message',role:'assistant',content:writing?[{type:'tool_use',id:'save-note',name:'mcp__company__work_memory_save',input:updatedNote}]:[{type:'text',text:'Restored authorized work'}],stop_reason:writing?'tool_use':'end_turn',usage:{input_tokens:24,output_tokens:8}};});await listenHttp(provider);
     const runtime=new HarnessRuntime(app,host,{apiKey:'fixture',upstreamURL:provider.listeningOrigin}),queue=new TaskQueue(host,{async run(){throw Error('Reading work memory must not execute a queued task');}});
     try{
         await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'admin',companyId:'one',role:'admin',permissions:[]});await host.putActor({id:'alice',companyId:'one',role:'employee',permissions:[]});await host.putAgent({id:'job',ownerId:'alice',companyId:'one',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});
@@ -27,7 +27,16 @@ test('native model requests restore bounded work notes and persisted entry bindi
         const saved=await app.inject({url:'/internal/client/'+second.id+'/mcp',method:'POST',headers:identity,payload:{jsonrpc:'2.0',id:'save-note',method:'tools/call',params:{name:'work_memory_save',arguments:updatedNote}}});expect(saved.json().result.isError).toBe(false);
         const final=await app.inject({url:'/internal/client/'+second.id+'/model/v1/messages',method:'POST',headers:{...identity,'x-api-key':second.token},payload:{model:'deepseek-flash',max_tokens:128,messages:[{role:'user',content:'continue current tool turn'}],tools:[]}});expect(final.statusCode).toBe(200);
         expect(JSON.stringify(bodies[3])).toContain('PERSISTED-NEXT-ACTION');expect((await host.workMemory.read('alice',works[0].id,'job')).revision).toBe(3);
+        for (const turn of ['4','5']) {
+            updatedNote.expectedRevision=Number(turn)-1;
+            expect((await model(second,turn,'Continue and revise the current work')).statusCode).toBe(200);
+            const identity={'x-company-turn-id':turn,'x-deepseek-harness-session-id':'stable-entry',authorization:'Bearer '+second.token};
+            const saved=await app.inject({url:'/internal/client/'+second.id+'/mcp',method:'POST',headers:identity,payload:{jsonrpc:'2.0',id:'save-note',method:'tools/call',params:{name:'work_memory_save',arguments:updatedNote}}});
+            expect(saved.json().result.isError).toBe(false);
+            const final=await app.inject({url:'/internal/client/'+second.id+'/model/v1/messages',method:'POST',headers:{...identity,'x-api-key':second.token},payload:{model:'deepseek-flash',max_tokens:128,messages:[{role:'user',content:'finish'}],tools:[]}});
+            expect(final.statusCode).toBe(200);expect((await host.workMemory.read('alice',works[0].id,'job')).derivedValidity).toBe('current');
+        }
         expect((await app.inject({url:'/v1/harness/clients/'+second.id+'/context',method:'PUT',headers,payload:{resources:[]}})).statusCode).toBe(200);
-        expect((await model(second,'4','Start an independent question')).statusCode).toBe(200);expect(JSON.stringify(bodies[4])).not.toContain('KEEP-ONLY-A');
+        expect((await model(second,'6','Start an independent question')).statusCode).toBe(200);expect(JSON.stringify(bodies.at(-1))).not.toContain('KEEP-ONLY-A');
     }finally{await runtime.close();await queue.close();await app.close();await provider.close();await host.close();}
 });
