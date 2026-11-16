@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import type { Framework } from './index.js';
-import { fail, FrameworkError, AdmissionBusyError } from './errors.js';
+import { fail, FrameworkError, AdmissionBusyError, ActionNotStartedError } from './errors.js';
 import { DeepSeekHarness } from '@deepseek-ai/dsh-sdk-client';
 import { randomBytes, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
 import { mkdir, writeFile, readFile } from 'node:fs/promises';
@@ -163,9 +163,8 @@ export class HarnessRuntime {
                     if (permission && (!agent.servicePermissions?.includes(permission) || !await this.host.hasPermission(actor,agent,permission) || !this.host.bindings(agent).some(b => this.host.registry.get(b.pluginId, b.pluginVersion).manifest.permissions.includes(permission))))
                         fail('PERMISSION_DENIED', 'Service grant was revoked');
                     if(tool.companyRef){const plugin=this.host.pluginFor(agent,tool.companyRef);if(plugin.version!==tool.pluginVersion||!agent.allowedTools.includes(tool.companyRef)||!await this.host.hasPermission(actor,agent,'tool.invoke:'+tool.companyRef,tool.companyRef))fail('PERMISSION_DENIED','Tool binding changed before action or receipt access');await this.host.market.guardTool(actor,agent,tool.companyRef);}
-                    if (!this.host.registry.ajv.validate(tool.inputSchema, rpc.params?.arguments ?? {}))
-                        fail('INVALID_INPUT', 'MCP tool arguments failed schema validation');
                     try {
+                        if (!this.host.registry.ajv.validate(tool.inputSchema, rpc.params?.arguments ?? {}))fail('INVALID_INPUT','MCP tool arguments failed schema validation');
                         await scope.context?.attestToolInput(tool.name,rpc.params?.arguments??{});
                         const readKind=tool.companyRef&&tool.effect==='read'?'plugin_read':tool.name;
                         scope.context?.beginRead(readKind,rpc.params?.arguments??{});
@@ -359,7 +358,7 @@ export class HarnessRuntime {
         }
         if (await grant('report.self.write')) {
             tools.push({ name: 'report_record',effect:'host', description: 'Record a concise work report for this agent.', inputSchema: { type: 'object', additionalProperties: false, required: ['summary'], properties: { summary: { type: 'string', maxLength: 8000 } } }, execute: input => this.host.recordReport({ ...bound, runId, summary: input.summary }) });
-            tools.push({name:'work_report',effect:'host',description:'Record reported facts, versioned evidence, deliverables and unresolved issues. Copy refs ONLY from resource_read.resourceRef or skill_read.resourceRef, never the market release id. This never changes completion/approval state. Uncited claims remain private.',inputSchema:reportSchema,execute:async input=>{const scope=this.scopes.get(runId);if(!scope)fail('UNAUTHENTICATED','No active report scope');for(const ref of [...input.artifacts,...input.facts.flatMap((f:any)=>f.refs),...input.issues.flatMap((i:any)=>typeof i==='string'?[]:i.refs)])await this.host.resources.read(actor.id,ref.id,ref.version);await this.host.provenance.sealReport(runId,input);scope.report=input;return{recorded:true,facts:input.facts.length,artifacts:input.artifacts.length};}});
+            tools.push({name:'work_report',effect:'host',description:'Record reported facts, versioned evidence, deliverables and unresolved issues. Copy refs ONLY from resource_read.resourceRef or skill_read.resourceRef, never the market release id. This never changes completion/approval state. Uncited claims remain private.',inputSchema:reportSchema,execute:async input=>{const scope=this.scopes.get(runId);if(!scope)fail('UNAUTHENTICATED','No active report scope');try{for(const ref of [...input.artifacts,...input.facts.flatMap((f:any)=>f.refs),...input.issues.flatMap((i:any)=>typeof i==='string'?[]:i.refs)])await this.host.resources.read(actor.id,ref.id,ref.version);}catch(error){throw new ActionNotStartedError(error instanceof FrameworkError?error.code:'UNAVAILABLE',error instanceof FrameworkError?error.message:'Report source validation could not complete');}await this.host.provenance.sealReport(runId,input);scope.report=input;return{recorded:true,facts:input.facts.length,artifacts:input.artifacts.length};}});
         }
         const currentWork=()=>{const scope=this.scopes.get(runId),workId=scope?.context?.pack.workId??scope?.request.workId??scope?.request.contextWorkId;if(!workId)fail('CONFLICT','先关联一项工作，再读取或保存工作笔记。');return workId as string;};
         tools.push({name:'experience_propose',effect:'host',description:'Save a private candidate lesson with actual input provenance. This does not validate, approve, publish, or change company rules. A human must validate and submit it for independent review.',inputSchema:{type:'object',additionalProperties:false,required:['title','lesson','refs'],properties:{title:{type:'string',minLength:1,maxLength:100},lesson:{type:'string',minLength:1,maxLength:8000},refs:workNoteSchema.properties.artifacts}},execute:async(input,key)=>this.host.experiences.create(actor.id,{...input,agentId:agent.id,...(this.scopes.get(runId)?.context?.pack.workId?{workId:this.scopes.get(runId)?.context?.pack.workId}:{}),idempotencyKey:key},await this.host.provenance.snapshot(runId))});
