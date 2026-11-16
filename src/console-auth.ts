@@ -4,7 +4,8 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Actor } from './types.js';
 const digest = (value: string) => createHash('sha256').update(value).digest('hex');
-export function consoleCookie(request: Pick<FastifyRequest, 'headers'>) { return /(?:^|;\s*)fw_console=([A-Za-z0-9_-]+)/u.exec(request.headers.cookie ?? '')?.[1]; }
+function cookieSettings(host:Framework){const path=host.options.publicOrigin?new URL(host.options.publicOrigin).pathname.replace(/\/$/u,''):'';return{name:path?'fw_console_'+digest(path).slice(0,8):'fw_console',path:path||'/'};}
+export function consoleCookie(request: Pick<FastifyRequest, 'headers'>,name='fw_console') { return new RegExp('(?:^|;\\s*)'+name+'=([A-Za-z0-9_-]+)','u').exec(request.headers.cookie ?? '')?.[1]; }
 export function assertSameOrigin(request: FastifyRequest) {
     const origin = request.headers.origin;
     let expected: string;
@@ -48,13 +49,14 @@ export class ConsoleSessions {
     async logout(token: string) { await this.host.db.pool.query('DELETE FROM console_sessions WHERE hash=$1', [digest(token)]); }
 }
 export async function authenticateRequest(host: Framework, request: FastifyRequest) { const authorization = request.headers.authorization; if (authorization?.startsWith('Bearer '))
-    return host.authenticate(authorization.slice(7)); const token = consoleCookie(request); if (!token)
+    return host.authenticate(authorization.slice(7)); const token = consoleCookie(request,cookieSettings(host).name); if (!token)
     fail('UNAUTHENTICATED', 'Sign in to the console'); return new ConsoleSessions(host).authenticate(token); }
 export function registerConsoleAuth(app: FastifyInstance, host: Framework) {
     const sessions = new ConsoleSessions(host);
+    const cookie=cookieSettings(host);
     app.addHook('onRequest', async (request, reply) => {
         reply.header('X-Content-Type-Options', 'nosniff').header('Referrer-Policy', 'no-referrer').header('Cache-Control', 'no-store');
-        if (consoleCookie(request) && !request.headers.authorization?.startsWith('Bearer ') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method))
+        if (consoleCookie(request,cookie.name) && !request.headers.authorization?.startsWith('Bearer ') && !['GET', 'HEAD', 'OPTIONS'].includes(request.method))
             assertSameOrigin(request);
     });
     app.get('/console/me', async (request) => { const actor = await authenticateRequest(host, request); return { id: actor.id, companyId: actor.companyId, role: actor.role, displayName: actor.displayName ?? actor.id }; });
@@ -63,6 +65,6 @@ export function registerConsoleAuth(app: FastifyInstance, host: Framework) {
             code?: string;
             accessToken?: string;
         };
-    }>('/console/login', { schema: { body: { type: 'object', additionalProperties: false, oneOf: [{ required: ['code'] }, { required: ['accessToken'] }], properties: { code: { type: 'string', maxLength: 160 }, accessToken: { type: 'string', maxLength: 256 } } } } }, async (request, reply) => { assertSameOrigin(request); const token = await sessions.login(request.body); return reply.header('Set-Cookie', `fw_console=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=28800${request.protocol === 'https' ? '; Secure' : ''}`).send({ ok: true }); });
-    app.post('/console/logout', async (request, reply) => { assertSameOrigin(request); await sessions.logout(consoleCookie(request) ?? ''); return reply.header('Set-Cookie', 'fw_console=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0').send({ ok: true }); });
+    }>('/console/login', { schema: { body: { type: 'object', additionalProperties: false, oneOf: [{ required: ['code'] }, { required: ['accessToken'] }], properties: { code: { type: 'string', maxLength: 160 }, accessToken: { type: 'string', maxLength: 256 } } } } }, async (request, reply) => { assertSameOrigin(request); const token = await sessions.login(request.body); return reply.header('Set-Cookie', `${cookie.name}=${token}; HttpOnly; SameSite=Strict; Path=${cookie.path}; Max-Age=28800${request.protocol === 'https' ? '; Secure' : ''}`).send({ ok: true }); });
+    app.post('/console/logout', async (request, reply) => { assertSameOrigin(request); await sessions.logout(consoleCookie(request,cookie.name) ?? ''); return reply.header('Set-Cookie', `${cookie.name}=; HttpOnly; SameSite=Strict; Path=${cookie.path}; Max-Age=0`).send({ ok: true }); });
 }

@@ -17,6 +17,10 @@ export async function createServer(host: Framework, options: { trustedProxyIP?: 
     host.channels.registerRoutes(app);
     host.resources.registerRoutes(app);
     host.workMemory.registerRoutes(app);
+    host.knowledge.registerRoutes(app);
+    host.resourceIndex.registerRoutes(app);
+    host.experiences.registerRoutes(app);
+    host.provenance.registerRoutes(app);
     host.market.registerRoutes(app);
     host.events.registerRoutes(app);
     registerEmployeeAccess(app, host);

@@ -11,8 +11,8 @@ import { companyFetch } from './company-fetch.mjs';
 
 export function companyOrigin(value) {
     const url = new URL(value);
-    if (url.username || url.password || url.search || url.hash || url.pathname !== '/' || !['https:', 'http:'].includes(url.protocol) || url.protocol === 'http:' && !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) throw new Error('公司服务必须使用 HTTPS；HTTP 仅用于本机验证。');
-    return url.origin;
+    if (url.username || url.password || url.search || url.hash || url.pathname.length>100 || !/^(?:\/[A-Za-z0-9_-]+)*\/?$/u.test(url.pathname) || !['https:', 'http:'].includes(url.protocol) || url.protocol === 'http:' && !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) throw new Error('公司服务必须使用 HTTPS 和有效部署路径；HTTP 仅用于本机验证。');
+    return url.origin+url.pathname.replace(/\/$/u,'');
 }
 const error = (message, status = 400) => Object.assign(new Error(message), { status });
 export async function createEmployeeClient(options) {

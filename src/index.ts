@@ -17,6 +17,10 @@ import { Channels } from './channels.js';
 import { Resources } from './resources.js';
 import { SourceProvenance } from './provenance.js';
 import {WorkMemory} from './work-memory.js';
+import {Knowledge} from './knowledge.js';
+import type{MemorySource}from'./knowledge.js';
+import{ResourceIndex}from'./resource-index.js';
+import{Experiences}from'./experiences.js';
 import { WorkResults } from './work-results.js';
 import { CapabilityMarket } from './market.js';
 import { EventRouting } from './event-routing.js';
@@ -27,7 +31,10 @@ export { FrameworkError } from './errors.js';
 export type { Actor, Agent, Invocation, Receipt } from './types.js';
 export type { WorkInput, WorkInputReceipt, WorkEntry } from './work-continuity.js';
 export type { WorkControlRequest, WorkReconciliation } from './work-control.js';
+export type{MemoryDomain,MemorySource,RecallInput}from'./knowledge.js';
 export interface FrameworkOptions {
+    resourceWorker?:boolean;
+    memorySources?:(host:Framework)=>Record<string,MemorySource>;
     entries?:boolean;
     publicOrigin?:string;
     entryTransportFactory?:EntryTransportFactory;
@@ -55,6 +62,9 @@ export class Framework {
     readonly resources: Resources;
     readonly provenance: SourceProvenance;
     readonly workMemory: WorkMemory;
+    readonly knowledge: Knowledge;
+    readonly resourceIndex:ResourceIndex;
+    readonly experiences:Experiences;
     readonly results: WorkResults;
     readonly market: CapabilityMarket;
     readonly events: EventRouting;
@@ -69,6 +79,10 @@ export class Framework {
         this.resources = new Resources(this);
         this.provenance = new SourceProvenance(this);
         this.workMemory = new WorkMemory(this);
+        this.knowledge = new Knowledge(this);
+        for(const[id,source]of Object.entries(options.memorySources?.(this)??{}))this.knowledge.registerSource(id,source);
+        this.resourceIndex=new ResourceIndex(this);
+        this.experiences=new Experiences(this);
         this.results = new WorkResults(this);
         this.market = new CapabilityMarket(this);
         this.events = new EventRouting(this);
@@ -488,6 +502,7 @@ export class Framework {
         }
     }
     async close() {
+        await this.resourceIndex.close();
         await this.events.close();
         await this.entries?.close();
         await this.assistant?.close();
@@ -496,4 +511,4 @@ export class Framework {
         await this.db.close();
     }
 }
-export async function createFramework(options: FrameworkOptions) { const framework = new Framework(options); await framework.presets.open(options.presetDirectories); await framework.registry.open(); await framework.db.open(); await framework.channels.open(); await framework.resources.open(); await framework.provenance.open(); await framework.workMemory.open(); await framework.results.open(); await framework.market.open(); await framework.events.open(); return framework; }
+export async function createFramework(options: FrameworkOptions) { const framework = new Framework(options); await framework.presets.open(options.presetDirectories); await framework.registry.open(); await framework.db.open(); await framework.channels.open(); await framework.resources.open(); await framework.provenance.open(); await framework.workMemory.open(); await framework.knowledge.open(); await framework.results.open(); await framework.market.open();await framework.experiences.open(); await framework.events.open();await framework.resourceIndex.open();if(options.resourceWorker!==false)framework.resourceIndex.start(); return framework; }

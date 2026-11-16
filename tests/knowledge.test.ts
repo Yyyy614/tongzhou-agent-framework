@@ -1,0 +1,30 @@
+import {test,expect} from 'vitest';
+import {mkdir,mkdtemp,writeFile} from 'node:fs/promises';
+import{referenceFileSource}from'../examples/sources/reference-file.mjs';
+import {resolve} from 'node:path';
+import {createFramework} from '../src/index.js';
+import {createServer} from '../src/server.js';
+
+test('a visible domain catalog supports cross-domain recall, direct references and honest coverage',async()=>{
+ await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/knowledge-'))}),app=await createServer(host);
+ try{
+  await host.installPlugin(resolve('fixtures/conformance-plugin'));for(const id of ['alice','bob'])await host.putActor({id,companyId:'one',role:'employee',permissions:[]});await host.putActor({id:'admin',companyId:'one',role:'admin',permissions:[]});await host.putAgent({id:'job',companyId:'one',ownerId:'alice',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});
+  const refs=[];for(const domain of ['guides','records']){const row=await host.resources.create('admin',{title:'Alignment '+domain,domain,kind:'document',body:'Alignment '+domain+' authoritative passage',access:{scope:'company',readerIds:[]},idempotencyKey:domain});refs.push({id:row.id,version:1});}
+  await host.resources.create('bob',{title:'HIDDEN-TITLE',domain:'hidden-domain',kind:'document',body:'Alignment hidden',access:{scope:'personal',readerIds:[]},idempotencyKey:'hidden'});
+  const headers={authorization:'Bearer '+await host.issueAccessToken('alice')};
+  const catalog=await app.inject({url:'/v1/memory-domains',headers});expect(catalog.statusCode).toBe(200);expect(catalog.body).not.toContain('hidden-domain');expect(catalog.json().items.map((d:any)=>d.id).sort()).toEqual(['guides','records']);
+  const result=await app.inject({url:'/v1/agents/job/recall',method:'POST',headers,payload:{query:'Alignment',purpose:'Compare the guidance and records',maxChars:3000}});expect(result.statusCode).toBe(200);expect(result.json().fragments.map((r:any)=>r.ref.id).sort()).toEqual(refs.map(r=>r.id).sort());expect(result.json().coverage.status).toBe('complete');expect(result.body).not.toContain('HIDDEN');
+  const direct=await app.inject({url:'/v1/agents/job/recall',method:'POST',headers,payload:{query:'unmatched',resources:[refs[0]],maxChars:1000}});expect(direct.json().selection.method).toBe('direct-reference');expect(direct.json().fragments[0].ref).toEqual(refs[0]);
+  const none=await app.inject({url:'/v1/agents/job/recall',method:'POST',headers,payload:{query:'nonexistent-match'}});expect(none.json().coverage.status).toBe('no-match');expect(none.body).not.toContain('hidden-domain');
+  const bounded=await app.inject({url:'/v1/agents/job/recall',method:'POST',headers,payload:{query:'Alignment',maxChars:160,maxReads:1}});expect(bounded.json().coverage.status).toBe('partial');expect(bounded.json().coverage.omissions.length).toBeGreaterThan(0);expect(bounded.json().fragments.reduce((n:number,f:any)=>n+f.text.length,0)).toBeLessThanOrEqual(160);
+ }finally{await app.close();await host.close();}
+});
+
+test('Chinese recall and a separately supplied file source obey the same canonical permissions and coverage',async()=>{
+ await mkdir('.test-data',{recursive:true});const root=await mkdtemp(resolve('.test-data/source-adapter-')),indexFile=resolve(root,'source.json'),host=await createFramework({root,resourceWorker:false,memorySources:h=>({'reference-file':referenceFileSource(h,indexFile)})});
+ try{await host.installPlugin(resolve('fixtures/conformance-plugin'));for(const[id,role]of[['alice','employee'],['bob','employee'],['admin','admin']]as const)await host.putActor({id,companyId:'one',role,permissions:[]});await host.putAgent({id:'job',companyId:'one',ownerId:'alice',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});const source=await host.resources.create('admin',{title:'通用核对准则',domain:'guides',kind:'document',body:'核对资料时必须保留有效来源。',access:{scope:'company',readerIds:[]},idempotencyKey:'one'}),privateSource=await host.resources.create('bob',{title:'PRIVATE-ADAPTER-TITLE',domain:'guides',kind:'document',body:'PRIVATE-ADAPTER-BODY',access:{scope:'personal',readerIds:[]},idempotencyKey:'hidden'});
+  const chinese=await host.knowledge.recall('alice','job',{query:'请帮我核对资料的来源'});expect(chinese.fragments.some(f=>f.ref.id===source.id)).toBe(true);expect(chinese.coverage.index.state).toBe('lagging');await host.resourceIndex.process();expect((await host.knowledge.recall('alice','job',{query:'核对'})).coverage.index.state).toBe('current');
+  await writeFile(indexFile,JSON.stringify([{id:source.id,version:1,domain:'guides',searchText:'check'},{id:privateSource.id,version:1,domain:'guides',searchText:'check'}]));await host.knowledge.configure('admin','guides',{name:'通用准则',description:'核对来源与交接资料',source:'reference-file'});const file=await host.knowledge.recall('alice','job',{query:'check'});expect(file.fragments.map(f=>f.ref.id)).toEqual([source.id]);expect(JSON.stringify(file).includes('PRIVATE-ADAPTER')).toBe(false);expect(file.coverage.status).toBe('partial');
+  await writeFile(indexFile,'not valid JSON');const unavailable=await host.knowledge.recall('alice','job',{query:'check'});expect(unavailable.coverage.status).toBe('partial');expect(unavailable.coverage.omissions.some(o=>o.reason==='source-unavailable')).toBe(true);
+ }finally{await host.close();}
+});

@@ -7,6 +7,7 @@ import css from './workspace.css';
 import {WorkResult} from './result.jsx';
 import {productName,brandMark} from '../../company-ui/brand.mjs';
 import {MarketPane,ResourcesPane,EventsPane,StructuredResult} from './capabilities.jsx';
+import{GovernancePane}from'./governance.jsx';
 const states={queued:'排队中',running:'执行中',succeeded:'已完成',failed:'执行失败',waiting_review:'等待核对',completed:'已核对完成',needs_attention:'需要处理',changes_requested:'需要调整',pending:'待提醒',delivered:'已送达',reconciliation_required:'结果待核实',waiting_approval:'等待审批',cancelled:'已取消',stop_requested:'正在停止',stopped:'已停止',waiting:'等待决定',active:'可执行',unknown:'结果未知',not_executed:'确认未执行'};
 const stateName=v=>states[v]??v;
 const rows=s=>s?.available?(Array.isArray(s.data)?s.data:s.data?.items??[]):[];
@@ -67,7 +68,7 @@ function PersonalContext({tab,call,activeAgentId}){
 function CompanyPanel({useWork,refresh,openAccount,call,openChat}){
     const snapshot=useWork(v=>v),data=snapshot.data;const[tab,setTab]=useState('work'),[selected,setSelected]=useState(null),[filter,setFilter]=useState('all'),[notice,setNotice]=useState('');
     const job=data?.agents?.find(a=>a.id===data.activeAgentId),works=rows(data?.work),attention=works.filter(w=>['waiting_review','needs_attention','reconciliation_required','waiting','changes_requested'].includes(w.state));
-    const labels={work:'工作概览',market:'内部市场',resources:'工作资料',memory:'岗位记忆',abilities:'我的能力',events:'自动协作',inbox:'通知与提醒',usage:'我的用量',connections:'公司连接'},activeRows=filter==='attention'?attention:works;
+    const labels={work:'工作概览',context:'工作依据与记忆',market:'内部市场',resources:'工作资料',memory:'岗位记忆',abilities:'我的能力',events:'自动协作',inbox:'通知与提醒',usage:'我的用量',connections:'公司连接'},activeRows=filter==='attention'?attention:works;
     const preferenceKey=data?.employee&&data?.activeAgentId?'tongzhou:panel:'+data.employee.companyId+':'+data.employee.id+':'+data.activeAgentId:null;
     useEffect(()=>{if(!preferenceKey)return;const saved=sessionStorage.getItem(preferenceKey);if(saved&&Object.hasOwn(labels,saved))setTab(saved);setSelected(null);},[preferenceKey]);
     function navigateTab(id){setTab(id);if(preferenceKey)sessionStorage.setItem(preferenceKey,id);setNotice('');}
@@ -76,6 +77,7 @@ function CompanyPanel({useWork,refresh,openAccount,call,openChat}){
         <nav className="cw-tabs" aria-label="工作中心">{Object.entries(labels).map(([id,label])=><button key={id} aria-label={label} aria-current={tab===id?'page':undefined} onClick={()=>navigateTab(id)}>{label}{id==='work'&&attention.length>0&&<span className="cw-count" aria-hidden="true">{attention.length}</span>}</button>)}</nav>
         {snapshot.error&&<p className="cw-error" role="alert">{snapshot.error}</p>}{notice&&<p role="status">{notice}</p>}
         {tab==='market'&&<MarketPane key={'market:'+data?.activeAgentId} call={call} activeAgentId={data?.activeAgentId}/>}
+        {tab==='context'&&<GovernancePane key={'context:'+data?.activeAgentId} call={call} activeAgentId={data?.activeAgentId} works={works} contextSelection={data?.workContext} openChat={openChat}/>}
         {tab==='resources'&&<ResourcesPane key={'resources:'+data?.activeAgentId} call={call} activeAgentId={data?.activeAgentId} works={works} openChat={openChat} contextSelection={data?.workContext}/>}
         {tab==='events'&&<EventsPane events={rows(data?.events)}/>}
         {tab==='work'&&<div className="cw-work-grid"><section><div className="cw-section-heading"><h2>协作工作 <span>{works.length}</span></h2><div className="cw-segments"><button aria-pressed={filter==='all'} onClick={()=>setFilter('all')}>全部</button><button aria-pressed={filter==='attention'} onClick={()=>setFilter('attention')}>需要关注</button></div></div>{data?.work&&!data.work.available?<p role="alert">{data.work.message}</p>:!activeRows.length?<Empty title={filter==='all'?'工作都安排妥当了':'暂无需要你处理的工作'}>有新的协作任务时，会在这里出现。</Empty>:activeRows.map(w=><article key={w.id} className="cw-work-card"><div className="cw-row"><Badge value={w.state}/><span>{date(w.updatedAt??w.createdAt)}</span></div><h3>{w.title}</h3><p className="cw-preview">{text(w.assignments?.find(a=>a.summary)?.summary).replace(/[*#]/gu,'').slice(0,200)||'等待执行岗位更新结果'}</p><footer><span>{w.assignments?.map(a=>a.agentName??'执行岗位').join('、')}</span><button onClick={()=>setSelected({...w})}>查看工作</button></footer></article>)}</section><aside><div className="cw-note"><p className="cw-section-label">当前岗位</p><h2>{job?.displayName??'当前岗位'}</h2><p>独立记忆、授权工具和模型用量随岗位切换。</p><button onClick={()=>setTab('abilities')}>查看岗位能力</button></div><div className="cw-note"><h3>接下来</h3><p>{attention.length?'有 '+attention.length+' 项工作需要关注。':'当前没有待处理工作。'}</p><p>{rows(data?.reminders).filter(r=>r.state==='pending').length} 条待提醒事项</p><button onClick={()=>setTab('inbox')}>查看通知与提醒</button></div></aside></div>}

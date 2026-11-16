@@ -26,7 +26,7 @@ try {
         cleanup = async () => { await host.entries?.close();await host.assistant?.close(); await runtime?.close(); await queue?.close(); await app?.close(); await lease?.close(); await host.close(); };
         lease = await HostLease.acquire(host.db);
         await bootstrap(host);
-        app = await createServer(host, { trustedProxyIP: process.env.TRUSTED_PROXY_IP,publicBasePath:process.env.PUBLIC_BASE_PATH });
+        app = await createServer(host, { trustedProxyIP: process.env.TRUSTED_PROXY_IP,publicBasePath:process.env.PUBLIC_BASE_PATH,webProfile:process.env.WEB_PROFILE as 'studio'|'classic'|undefined });
         let upstream = (process.env.DEEPSEEK_BASE_URL ?? 'https://api.deepseek.com').replace(/\/$/u, '');
         if (upstream === 'https://api.deepseek.com')
             upstream += '/anthropic';

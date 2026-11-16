@@ -6,8 +6,9 @@ import { fail } from './errors.js';
 import type { PluginRegistry } from './plugins/registry.js';
 
 export interface PackageFile { path: string; contentBase64: string; }
-export interface MarketInput { assetKey: string; name: string; summary: string; version: string; kind: 'skill' | 'plugin'; scope: 'personal' | 'department' | 'company'; departmentId?: string; files: PackageFile[]; idempotencyKey: string; }
+export interface MarketInput { assetKey: string; name: string; summary: string; version: string; kind: 'skill' | 'plugin';contentType?:'skill'|'sop'|'experience'; scope: 'personal' | 'department' | 'company'; departmentId?: string; files: PackageFile[]; idempotencyKey: string; }
 export const marketInputSchema = { type: 'object', additionalProperties: false, required: ['assetKey', 'name', 'summary', 'version', 'kind', 'scope', 'files', 'idempotencyKey'], properties: {
+    contentType:{enum:['skill','sop','experience']},
     assetKey: { type: 'string', minLength: 1, maxLength: 128, pattern: '^(?:@[a-z0-9][a-z0-9._-]*/)?[a-z][a-z0-9._-]*$' }, name: { type: 'string', minLength: 1, maxLength: 100 }, summary: { type: 'string', minLength: 1, maxLength: 1000 }, version: { type: 'string', maxLength: 64 }, kind: { enum: ['skill', 'plugin'] }, scope: { enum: ['personal', 'department', 'company'] }, departmentId: { type: 'string', maxLength: 64 }, idempotencyKey: { type: 'string', minLength: 1, maxLength: 160 }, files: { type: 'array', minItems: 1, maxItems: 128, items: { type: 'object', additionalProperties: false, required: ['path', 'contentBase64'], properties: { path: { type: 'string', minLength: 1, maxLength: 200 }, contentBase64: { type: 'string', maxLength: 2000000 } } } }
 } };
 

@@ -10,6 +10,10 @@ test('dynamic resource expansion binds the source authority across revoke and re
     }finally{await host.close();}
 });
 
+test('restoring employee access does not revive a context from an earlier authorization generation',async()=>{
+    const host=await fixture();try{const pack=await host.resources.context('alice','job',{resources:[]}),actor=await host.db.get<any>('actors','alice');await host.putActor({...actor,active:false});await host.putActor(actor);await expect(host.resources.pack('alice',pack.id)).rejects.toMatchObject({code:'CONFLICT'});}finally{await host.close();}
+});
+
 async function fixture(){await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/source-boundaries-'))});await host.installPlugin(resolve('fixtures/conformance-plugin'));for(const id of ['alice','bob'])await host.putActor({id,companyId:'one',role:'employee',permissions:[]});await host.putActor({id:'admin',companyId:'one',role:'admin',permissions:[]});await host.putAgent({id:'job',ownerId:'alice',companyId:'one',pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});return host;}
 
 test('concurrent derived reads use their transaction connection without starving the pool',async()=>{

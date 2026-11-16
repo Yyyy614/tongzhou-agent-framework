@@ -1,0 +1,20 @@
+import{test,expect}from'vitest';import{mkdir,mkdtemp}from'node:fs/promises';import{resolve}from'node:path';
+import{createFramework}from'../src/index.js';import{createServer}from'../src/server.js';
+test('durable source events preserve versions, converge out of order and notify only authorized subscribers',async()=>{
+ await mkdir('.test-data',{recursive:true});const host=await createFramework({root:await mkdtemp(resolve('.test-data/source-events-')),resourceWorker:false}),app=await createServer(host);
+ try{
+  await host.installPlugin(resolve('fixtures/conformance-plugin'));await host.putActor({id:'admin',companyId:'one',role:'admin',permissions:[]});for(const id of ['alice','bob']){await host.putActor({id,companyId:'one',role:'employee',permissions:[]});await host.putAgent({id:id+'-job',companyId:'one',ownerId:id,pluginId:'@example/conformance',pluginVersion:'0.1.0',allowedTools:[]});}
+  const row=await host.resources.create('admin',{title:'Reviewed guidance',domain:'guides',kind:'sop',body:'CURRENT-V1',access:{scope:'company',readerIds:[]},idempotencyKey:'one'}),headers={authorization:'Bearer '+await host.issueAccessToken('alice')},admin={authorization:'Bearer '+await host.issueAccessToken('admin')};
+  const subscribed=await app.inject({url:'/v1/agents/alice-job/resource-subscriptions',method:'POST',headers,payload:{resourceId:row.id,mode:'notify'}});expect(subscribed.statusCode).toBe(201);
+  const pack=await host.resources.context('alice','alice-job',{resources:[{id:row.id,version:1}]});
+  const newer=await host.resources.update('admin',row.id,{revision:row.revision,body:'CURRENT-V2'});await expect(host.resources.pack('alice',pack.id)).rejects.toMatchObject({code:'CONFLICT'});
+  const pending=await app.inject({url:'/v1/admin/resource-index',headers:admin});expect(pending.statusCode).toBe(200);expect(pending.json().pending).toBeGreaterThan(0);
+  for(let i=0;i<2;i++)expect((await app.inject({url:'/v1/admin/resource-index/process',method:'POST',headers:admin})).statusCode).toBe(200);
+  const indexed=(await host.db.pool.query('SELECT version,active FROM resource_search_index WHERE resource_id=$1',[row.id])).rows[0];expect(indexed).toMatchObject({version:2,active:true});
+  await host.db.pool.query("UPDATE resource_change_outbox SET state='pending' WHERE resource_id=$1",[row.id]);await host.resourceIndex.process();expect((await host.db.pool.query('SELECT version FROM resource_search_index WHERE resource_id=$1',[row.id])).rows[0].version).toBe(2);
+  const notices=await app.inject({url:'/v1/agents/alice-job/resource-notifications',headers});expect(notices.json().items).toHaveLength(1);expect(notices.json().items[0].title).toBe('Reviewed guidance');
+  const bob=await app.inject({url:'/v1/agents/bob-job/resource-notifications',headers:{authorization:'Bearer '+await host.issueAccessToken('bob')}});expect(bob.json().items).toEqual([]);
+  const removed=await app.inject({url:'/v1/resources/'+row.id+'/state',method:'PUT',headers:admin,payload:{revision:newer.revision,active:false}});expect(removed.statusCode).toBe(200);await host.resourceIndex.process();expect((await host.db.pool.query('SELECT active FROM resource_search_index WHERE resource_id=$1',[row.id])).rows[0].active).toBe(false);expect((await host.db.pool.query('SELECT count(*)::int AS n FROM resource_versions WHERE resource_id=$1',[row.id])).rows[0].n).toBe(2);
+  const after=await app.inject({url:'/v1/agents/alice-job/resource-notifications',headers});expect(after.body).not.toContain('Reviewed guidance');expect(after.json().items.every((n:any)=>n.visibility==='unavailable')).toBe(true);
+ }finally{await app.close();await host.close();}
+});

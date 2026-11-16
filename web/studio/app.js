@@ -6,10 +6,12 @@ import { studioOverview } from './studio-overview.js';
 import { studioEmployeeShell } from './studio-employee.js';
 import { studioShell,searchWorkspace } from './studio-shell.js';
 import {marketView,resourcesView,eventsView} from './framework-views.js';
-const views={...baseViews,overview:studioOverview,market:marketView,resources:resourcesView,events:eventsView};
+import{contextView}from'./context-view.js';
+const views={...baseViews,overview:studioOverview,market:marketView,resources:resourcesView,events:eventsView,context:contextView};
 const root = document.querySelector('#app');
 const routes = [{id:'channels',name:'渠道与接口',icon:'box'},{ id: 'organization', name: '组织与权限', icon: 'people' }, { id: 'work', name: '协作工作', icon: 'activity' }, { id: 'assistant', name: '工作辅助 Bot', icon: 'bot' }, { id: 'overview', name: '工作空间', icon: 'grid' }, { id: 'employees', name: '员工管理', icon: 'people', count: 'employees' }, { id: 'agents', name: 'Agent 管理', icon: 'bot', count: 'agents' }, { id: 'plugins', name: '插件与能力', icon: 'box', count: 'plugins' }, { id: 'memory', name: '独立记忆', icon: 'brain' }, { id: 'logs', name: '日志与记录', icon: 'activity' }, { id: 'usage', name: '模型用量', icon: 'chart' }];
 routes.splice(1,0,{id:'market',name:'内部能力市场',icon:'box'},{id:'resources',name:'公司资源',icon:'file'},{id:'events',name:'自动协作',icon:'activity'});
+routes.splice(2,0,{id:'context',name:'上下文与资料域',icon:'brain'});
 const state = { page: 'overview', memoryAgentId: null, memoryNotes: {}, memoryMode: 'edit', logs: {}, usage: {} };
 if(entryEnabled)routes.unshift({id:'entries',name:'外部机器人与 CLI',icon:'bot'});
 let me, employees = [], agents = [], plugins = [], main, sidebar, breadcrumb, nav;
@@ -17,8 +19,8 @@ let ticket = 0;
 let liveView, preferenceKey;
 function persistState() {
     if (!preferenceKey) return;
-    const { memoryAgentId, memoryNotes, memoryMode, logs, usage } = state;
-    try { sessionStorage.setItem(preferenceKey, JSON.stringify({ memoryAgentId, memoryNotes, memoryMode, logs, usage })); } catch { }
+    const { memoryAgentId, memoryNotes, memoryMode, logs, usage,context } = state;
+    try { sessionStorage.setItem(preferenceKey, JSON.stringify({ memoryAgentId, memoryNotes, memoryMode, logs, usage,context })); } catch { }
 }
 function restoreState() {
     preferenceKey = 'company-framework:console-view:' + me.companyId + ':' + me.id;
@@ -26,6 +28,7 @@ function restoreState() {
     try { const raw = sessionStorage.getItem(preferenceKey); if (raw?.length < 12000) saved = JSON.parse(raw) ?? {}; } catch { }
     const text = (value, max = 80) => typeof value === 'string' ? value.slice(0, max) : '';
     state.memoryAgentId = text(saved.memoryAgentId, 64) || null;
+    state.context={agentId:text(saved.context?.agentId,64)};
     state.memoryMode = saved.memoryMode === 'preview' ? 'preview' : 'edit';
     state.memoryNotes = Object.fromEntries(Object.entries(saved.memoryNotes && typeof saved.memoryNotes === 'object' ? saved.memoryNotes : {}).filter(([key, value]) => /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/u.test(key) && typeof value === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/u.test(value)));
     state.logs = { agentId: text(saved.logs?.agentId, 64), q: text(saved.logs?.q, 200), type: text(saved.logs?.type), before: text(saved.logs?.before, 40) || null };

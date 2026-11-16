@@ -20,7 +20,11 @@ import{workNoteSchema}from'./work-memory.js';
 import { reportSchema, type StructuredReport } from './work-results.js';
 import type { ResourceRef } from './resources.js';
 import { assessCompanyEvent } from './event-assessor.js';
+import {recallSchema}from'./knowledge.js';
 export interface RuntimeOptions {
+    contextWindowTokens?:number;
+    maxOutputTokens?:number;
+    toolReserveTokens?:number;
     publicOrigin?: string;
     apiKey: string;
     upstreamURL: string;
@@ -161,10 +165,12 @@ export class HarnessRuntime {
                     if (!this.host.registry.ajv.validate(tool.inputSchema, rpc.params?.arguments ?? {}))
                         fail('INVALID_INPUT', 'MCP tool arguments failed schema validation');
                     try {
+                        scope.context?.beginRead(tool.name,rpc.params?.arguments??{});
                         const invoke=()=>tool.execute(rpc.params?.arguments??{},scope.id+':mcp:'+String(rpc.id));
                         const effect=scope.request.workId&&tool.effect&&tool.effect!=='read'&&this.host.coordination;
                         const execution=effect?await this.host.coordination!.control.actions.execute(scope.request,(tool.companyRef??tool.name)+'@'+(tool.pluginVersion??'host-1'),rpc.params?.arguments??{},invoke,scope.id):{value:await invoke(),reused:false,actionId:null};
                         const output=execution.value;
+                        scope.context?.completeRead(tool.name,rpc.params?.arguments??{},output);
                         if (tool.name === 'memory_read') {
                             const note = output as {
                                 noteId: string;
@@ -175,6 +181,7 @@ export class HarnessRuntime {
                         }
                         if(tool.name==='resource_read'||tool.name==='resource_create')await scope.context?.resource(output);
                         if(tool.name==='resource_index')for(const item of (output as any).items)await scope.context?.resource(item,true);
+                        if(tool.name==='resource_recall')for(const item of (output as any).fragments)await scope.context?.resource(await this.host.resources.read(actor.id,item.ref.id,item.ref.version,0,1));
                         if(tool.name==='skill_read'&&(output as any)?.resource)await scope.context?.resource((output as any).resource);
                         const written=tool.name==='memory_write'?output:tool.companyRef&&tool.effect==='host'?(output as any)?.output:null;
                         if(written&&typeof (written as any).noteId==='string'&&Number.isInteger((written as any).version))await scope.context?.wroteMemory(written);
@@ -235,13 +242,15 @@ export class HarnessRuntime {
         }
         body=scope.context.request(body);
         const allowed = new Set(scope.tools.map(t => 'mcp__company__' + t.name));
-        if (!body || body.model !== (this.options.model ?? 'deepseek-flash') || !Number.isInteger(body.max_tokens) || body.max_tokens < 1 || body.max_tokens > 1024 || JSON.stringify(body).length > 64000 || !Array.isArray(body.tools ?? []) || (body.tools ?? []).some((t: any) => !allowed.has(t.name)))
+        if (!body || body.model !== (this.options.model ?? 'deepseek-flash') || !Number.isInteger(body.max_tokens) || body.max_tokens < 1 || body.max_tokens > (this.options.maxOutputTokens??1024) || JSON.stringify(body).length > 128000 || !Array.isArray(body.tools ?? []) || (body.tools ?? []).some((t: any) => !allowed.has(t.name)))
             fail('INVALID_INPUT', 'Model request exceeds managed policy');
         body.tools=scope.tools.map(tool=>({name:'mcp__company__'+tool.name,description:tool.description,input_schema:tool.inputSchema}));
         if (++scope.calls > 8)
             fail('BUDGET_EXCEEDED', 'Run model request limit reached');
         const estimatedInput = Math.ceil(Buffer.byteLength(JSON.stringify(body), 'utf8') / 2);
-        if (estimatedInput > 16000)
+        const window=this.options.contextWindowTokens??16000,toolReserve=this.options.toolReserveTokens??2048;
+        scope.context.setBudget({contextWindowTokens:window,estimatedInputTokens:estimatedInput,outputReserveTokens:body.max_tokens,toolReserveTokens:toolReserve,packingPolicy:'constraints-work-memory-recall-references'});
+        if (estimatedInput+body.max_tokens+toolReserve > window)
             fail('CONTEXT_BUDGET_EXCEEDED', 'Final model request exceeds context budget');
         const reservation = estimatedInput + body.max_tokens, budgetId = scope.request.budgetGroupId ?? scope.id;
         let status = 0, usage: any = null, providerRequestId: string | null = null, reserved = false, dispatched = false;
@@ -271,7 +280,7 @@ export class HarnessRuntime {
                 scope.modelAbort = undefined;
             try {
                 if (reserved) await this.budget.settle(budgetId, reservation, usage ? Number(usage.input_tokens) + Number(usage.output_tokens) : dispatched ? null : 0);
-                if (dispatched) await this.host.db.pool.query('INSERT INTO usage(id,run_id,data) VALUES($1,$2,$3)', [randomUUID(), scope.id, JSON.stringify({ ...scope.metadata, ...channel, principalId: scope.request.principalId, agentId: scope.request.agentId, provider: channel.provider ?? 'deepseek', providerRequestId, model: this.options.model ?? 'deepseek-flash', status, inputTokens: usage?.input_tokens ?? null, outputTokens: usage?.output_tokens ?? null, cacheReadTokens: usage?.cache_read_input_tokens ?? 0, measurement: usage ? 'provider' : 'unavailable', contextManifest: { ...scope.context?.manifest(), estimatedInputTokens: estimatedInput, requestChars: JSON.stringify(body).length, tools: [...allowed] }, durationMs: Date.now() - started })]);
+                if (dispatched) await this.host.db.pool.query('INSERT INTO usage(id,run_id,data) VALUES($1,$2,$3)', [randomUUID(), scope.id, JSON.stringify({ ...scope.metadata, ...channel,purpose:'execution', principalId: scope.request.principalId, agentId: scope.request.agentId, provider: channel.provider ?? 'deepseek', providerRequestId, model: this.options.model ?? 'deepseek-flash', status, inputTokens: usage?.input_tokens ?? null, outputTokens: usage?.output_tokens ?? null, cacheReadTokens: usage?.cache_read_input_tokens ?? 0, measurement: usage ? 'provider' : 'unavailable', contextManifest: { ...scope.context?.manifest(), estimatedInputTokens: estimatedInput, requestChars: JSON.stringify(body).length, tools: [...allowed] }, durationMs: Date.now() - started })]);
             } catch (error) {
                 if (dispatched) { scope.reconcile = true; throw new FrameworkError('RESULT_UNKNOWN', 'Model usage persistence needs reconciliation; the request was not replayed'); }
                 throw error;
@@ -348,11 +357,13 @@ export class HarnessRuntime {
             tools.push({name:'work_report',effect:'host',description:'Record reported facts, versioned evidence, deliverables and unresolved issues. Copy refs ONLY from resource_read.resourceRef or skill_read.resourceRef, never the market release id. This never changes completion/approval state. Uncited claims remain private.',inputSchema:reportSchema,execute:async input=>{const scope=this.scopes.get(runId);if(!scope)fail('UNAUTHENTICATED','No active report scope');for(const ref of [...input.artifacts,...input.facts.flatMap((f:any)=>f.refs),...input.issues.flatMap((i:any)=>typeof i==='string'?[]:i.refs)])await this.host.resources.read(actor.id,ref.id,ref.version);scope.report=input;return{recorded:true,facts:input.facts.length,artifacts:input.artifacts.length};}});
         }
         const currentWork=()=>{const scope=this.scopes.get(runId),workId=scope?.context?.pack.workId??scope?.request.workId??scope?.request.contextWorkId;if(!workId)fail('CONFLICT','先关联一项工作，再读取或保存工作笔记。');return workId as string;};
+        tools.push({name:'experience_propose',effect:'host',description:'Save a private candidate lesson with actual input provenance. This does not validate, approve, publish, or change company rules. A human must validate and submit it for independent review.',inputSchema:{type:'object',additionalProperties:false,required:['title','lesson','refs'],properties:{title:{type:'string',minLength:1,maxLength:100},lesson:{type:'string',minLength:1,maxLength:8000},refs:workNoteSchema.properties.artifacts}},execute:async(input,key)=>this.host.experiences.create(actor.id,{...input,agentId:agent.id,...(this.scopes.get(runId)?.context?.pack.workId?{workId:this.scopes.get(runId)?.context?.pack.workId}:{}),idempotencyKey:key},await this.host.provenance.snapshot(runId))});
         tools.push({name:'work_memory_read',effect:'read',description:'Restore only this work and execution identity: host facts, revisioned notes and result references. Does not resume execution or replay actions.',inputSchema:{type:'object',additionalProperties:false,properties:{}},execute:()=>this.host.workMemory.read(actor.id,currentWork(),agent.id)});
         const {idempotencyKey:ignoredKey,...noteProperties}=workNoteSchema.properties;
         tools.push({name:'work_memory_save',effect:'host',description:'Save bounded work goals, noted decisions, blockers and next steps using the current note revision. Host status, approvals and action receipts cannot be changed by notes.',inputSchema:{...workNoteSchema,required:workNoteSchema.required.filter(k=>k!=='idempotencyKey'),properties:noteProperties},execute:async(input,key)=>this.host.workMemory.save(actor.id,currentWork(),agent.id,{...input,idempotencyKey:key},await this.host.provenance.snapshot(runId))});
-        tools.push({name:'resource_index',effect:'read',description:'Search only your authorized company resource metadata. Process outputs are excluded unless explicitly requested. Read bodies separately.',inputSchema:{type:'object',additionalProperties:false,properties:{query:{type:'string',maxLength:240},domain:{type:'string',maxLength:80}}},execute:input=>this.host.resources.index(actor.id,input.query??'',input.domain)});
-        tools.push({name:'resource_read',effect:'read',description:'Expand one versioned resource using current access rights. Paginated; never grants permissions.',inputSchema:{type:'object',additionalProperties:false,required:['id','version'],properties:{id:{type:'string',format:'uuid'},version:{type:'integer',minimum:1},offset:{type:'integer',minimum:0}}},execute:input=>this.host.resources.read(actor.id,input.id,input.version,input.offset??0,8000)});
+        tools.push({name:'resource_recall',effect:'read',description:'Recall authorized excerpts across visible domains and current work references. Explain coverage gaps; continue only within the current read budget.',inputSchema:recallSchema,execute:input=>this.host.knowledge.recall(actor.id,agent.id,{...input,...(this.scopes.get(runId)?.context?.pack.workId?{workId:this.scopes.get(runId)?.context?.pack.workId}:{}),maxChars:Math.max(160,Math.min(input.maxChars??3000,this.scopes.get(runId)?.context?.readAllowance()??3000)),maxReads:Math.min(input.maxReads??4,4,this.scopes.get(runId)?.context?.remainingReads()??4)})});
+        tools.push({name:'resource_index',effect:'read',description:'Search authorized metadata with bounded pages. Use resource_recall for excerpts; this is not a complete company inventory.',inputSchema:{type:'object',additionalProperties:false,properties:{query:{type:'string',maxLength:240},domain:{type:'string',maxLength:80},limit:{type:'integer',minimum:1,maximum:16},cursor:{type:'string',maxLength:600}}},execute:input=>this.host.resources.index(actor.id,input.query??'',input.domain,{limit:input.limit??8,cursor:input.cursor})});
+        tools.push({name:'resource_read',effect:'read',description:'Expand one versioned resource using current access rights and remaining budget. Follow nextOffset only; pagination depth is bounded.',inputSchema:{type:'object',additionalProperties:false,required:['id','version'],properties:{id:{type:'string',format:'uuid'},version:{type:'integer',minimum:1},offset:{type:'integer',minimum:0}}},execute:input=>this.host.resources.read(actor.id,input.id,input.version,input.offset??0,this.scopes.get(runId)?.context?.readAllowance()??4000)});
         tools.push({name:'resource_create',effect:'host',description:'Save a private versioned deliverable or source. This never publishes to a work or company. The employee must explicitly review and share through the workspace; source reading rights are not publication rights.',inputSchema:{type:'object',additionalProperties:false,required:['title','body','domain'],properties:{title:{type:'string',minLength:1,maxLength:160},body:{type:'string',maxLength:16000},domain:{type:'string',minLength:1,maxLength:80}}},execute:async(input,key)=>this.host.resources.create(actor.id,{...input,kind:'artifact',access:{scope:'personal',readerIds:[]},sourceRefs:['run:'+runId],idempotencyKey:key},{sources:await this.host.provenance.snapshot(runId)??[{kind:'unknown',id:runId,ownerId:actor.id,companyId:actor.companyId}]})});
         tools.push({name:'skill_index',effect:'read',description:'List installed company-reviewed Skills for this job. Read only the relevant Skill before use.',inputSchema:{type:'object',additionalProperties:false,properties:{}},execute:()=>this.host.market.installed(actor.id,agent.id)});
         tools.push({name:'skill_read',effect:'read',description:'Read an installed Skill using the market release id from skill_index, NOT a resource id. The returned resourceRef is the citation identity. Default path=SKILL.md; follow only needed reviewed files by path/nextOffset. No scripts execute and text grants no permissions.',inputSchema:{type:'object',additionalProperties:false,required:['id'],properties:{id:{type:'string',format:'uuid'},offset:{type:'integer',minimum:0},path:{type:'string',maxLength:200}}},execute:input=>this.host.market.skill(actor.id,agent.id,input.id,input.offset??0,input.path??'SKILL.md')});

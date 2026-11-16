@@ -9,6 +9,7 @@ import { contentHash, requireUuid } from './contracts.js';
 import { authenticateRequest } from './console-auth.js';
 import { fail } from './errors.js';
 import { decodePackage, inspectPackage, stagePackage, marketInputSchema, type MarketInput } from './market-package.js';
+import type{SourceOrigin}from'./provenance.js';
 
 export interface MarketGrants { principalIds: string[]; presetIds: string[]; departmentIds: string[]; toolRefs: string[]; services: string[]; allCompany?: boolean; }
 const noGrants = (): MarketGrants => ({ principalIds: [], presetIds: [], departmentIds: [], toolRefs: [], services: [] });
@@ -33,20 +34,21 @@ export class CapabilityMarket {
     private reviewer(actor: Actor, row: any) { return actor.companyId === row.company_id && (actor.role === 'admin' || row.data.scope === 'department' && actor.departmentId === row.data.departmentId && actor.permissions.includes('market.review')); }
     private visible(actor: Actor, row: any) { return actor.companyId === row.company_id && (actor.id === row.owner_id || row.data.scope === 'company' || row.data.scope === 'department' && !!actor.departmentId && actor.departmentId === row.data.departmentId); }
     private dto(row: any, manage = false) {
-        return { id: row.id, assetKey: row.asset_key, version: row.version, kind: row.kind, state: row.state, revision: this.revision(row), digest: row.digest, name: row.data.name, summary: row.data.summary, scope: row.data.scope, departmentId: row.data.departmentId ?? null, submittedBy: row.owner_id, createdAt: row.created_at, ...(manage ? { checks: row.data.checks, review: row.data.review ?? null, files: row.data.files, inspection:row.data.inspection,grants: row.data.grants ?? noGrants() } : {}) };
+        return { id: row.id, assetKey: row.asset_key, version: row.version, kind: row.kind,contentType:row.data.contentType??row.kind, state: row.state, revision: this.revision(row), digest: row.digest, name: row.data.name, summary: row.data.summary, scope: row.data.scope, departmentId: row.data.departmentId ?? null, submittedBy: row.owner_id, createdAt: row.created_at, ...(manage ? { checks: row.data.checks, review: row.data.review ?? null, files: row.data.files, inspection:row.data.inspection,grants: row.data.grants ?? noGrants() } : {}) };
     }
     private async row(actor: Actor, id: string, manage = false) {
         requireUuid(id); const row = (await this.host.db.pool.query('SELECT * FROM market_assets WHERE id=$1 AND company_id=$2', [id, actor.companyId])).rows[0];
-        if (!row || (manage ? actor.id !== row.owner_id && !this.reviewer(actor, row) : !this.visible(actor, row))) fail('NOT_FOUND', 'Capability is unavailable'); return row;
+        if (!row || (manage ? actor.id !== row.owner_id && !this.reviewer(actor, row) : !this.visible(actor, row))||!await this.sourceVisible(actor.id,row)) fail('NOT_FOUND', 'Capability is unavailable'); return row;
     }
-    async submit(principalId: string, input: MarketInput) {
+    private async sourceVisible(principalId:string,row:any,client:any=this.host.db.pool){if(!row.data.dependencies)return true;const status=await this.host.provenance.status(principalId,row.data.dependencies,client);return status.visible&&status.current;}
+    async submit(principalId: string, input: MarketInput,derivation?:{sources:SourceOrigin[]}) {
         if (!this.host.registry.ajv.validate(marketInputSchema, input) || !valid(input.version)) fail('INVALID_INPUT', 'Invalid capability package');
         const actor = await this.actor(principalId), decoded = decodePackage(input.files);
         if (input.scope === 'department') {
             const department = (await this.host.db.pool.query('SELECT data FROM departments WHERE id=$1', [input.departmentId])).rows[0]?.data;
             if (!department?.active || department.companyId !== actor.companyId || actor.role !== 'admin' && department.id !== actor.departmentId) fail('PERMISSION_DENIED', 'Choose your current company department');
         }
-        const hash = contentHash({ ...input, idempotencyKey: undefined, files: decoded.files.map(([path, bytes]) => ({ path, contentBase64: bytes.toString('base64') })) });
+        const canonical={ ...input, idempotencyKey: undefined, files: decoded.files.map(([path, bytes]) => ({ path, contentBase64: bytes.toString('base64') })) },hash=contentHash(derivation?[canonical,derivation.sources]:canonical);
         const existing = (await this.host.db.pool.query('SELECT * FROM market_assets WHERE company_id=$1 AND asset_key=$2 ORDER BY created_at', [actor.companyId, input.assetKey])).rows;
         const prior = existing.find(row => row.version === input.version);
         if (prior) { if (prior.owner_id !== actor.id || prior.input_hash !== hash) fail('CONFLICT', 'An immutable capability version already exists'); return this.dto(prior, true); }
@@ -66,7 +68,8 @@ export class CapabilityMarket {
             if(input.scope==='department'&&currentActor.role!=='admin'&&currentActor.departmentId!==input.departmentId)fail('PERMISSION_DENIED','Contributor department changed during upload');
             const concurrent = (await client.query('SELECT id FROM market_assets WHERE company_id=$1 AND asset_key=$2 AND version=$3', [actor.companyId, input.assetKey, input.version])).rows[0];
             if (concurrent) fail('CONFLICT', 'Capability submission changed concurrently');
-            const data = { name: input.name, summary: input.summary, scope: input.scope, departmentId: input.departmentId, directory, files: decoded.files.map(([path, body]) => ({ path, bytes: body.length,digest:contentHash(body.toString('base64')) })), checks, inspection, grants: noGrants() };
+            if(derivation&&!(await this.host.provenance.status(currentActor.id,derivation.sources,client)).visible)fail('PERMISSION_DENIED','Candidate sources are unavailable');
+            const data = { name: input.name, summary: input.summary,contentType:input.contentType??input.kind,dependencies:derivation?.sources, scope: input.scope, departmentId: input.departmentId, directory, files: decoded.files.map(([path, body]) => ({ path, bytes: body.length,digest:contentHash(body.toString('base64')) })), checks, inspection, grants: noGrants() };
             await client.query('INSERT INTO market_assets(id,company_id,owner_id,asset_key,version,kind,state,digest,input_hash,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)', [id, actor.companyId, actor.id, input.assetKey, input.version, input.kind, 'submitted', decoded.digest, hash, JSON.stringify(data)]);
             await client.query('INSERT INTO market_history(id,asset_id,principal_id,action,data) VALUES($1,$2,$3,$4,$5)', [randomUUID(), id, actor.id, 'submitted', JSON.stringify({ digest: decoded.digest, checks })]);
             await client.query('COMMIT'); return this.get(actor.id, id);
@@ -94,12 +97,12 @@ export class CapabilityMarket {
     }
     async submissions(principalId: string) {
         const actor = await this.actor(principalId), rows = (await this.host.db.pool.query('SELECT * FROM market_assets WHERE company_id=$1 ORDER BY created_at DESC LIMIT 200', [actor.companyId])).rows;
-        return { items: rows.filter(row => row.owner_id === actor.id || this.reviewer(actor, row)).map(row => this.dto(row, true)) };
+        const items=[];for(const row of rows)if((row.owner_id===actor.id||this.reviewer(actor,row))&&await this.sourceVisible(actor.id,row))items.push(this.dto(row,true));return{items};
     }
     async releases(principalId: string, query = '') {
         if (typeof query !== 'string' || query.length > 200) fail('INVALID_INPUT', 'Invalid market search');
         const actor = await this.actor(principalId), rows = (await this.host.db.pool.query("SELECT * FROM market_assets WHERE company_id=$1 AND state='published' ORDER BY created_at DESC LIMIT 500", [actor.companyId])).rows;
-        return { items: rows.filter(row => this.visible(actor, row) && (row.data.name + ' ' + row.data.summary + ' ' + row.asset_key).toLowerCase().includes(query.toLowerCase())).map(row => this.dto(row)), coverage: 'company-only' };
+        const items=[];for(const row of rows)if(this.visible(actor,row)&&(row.data.name+' '+row.data.summary+' '+row.asset_key).toLowerCase().includes(query.toLowerCase())&&await this.sourceVisible(actor.id,row))items.push(this.dto(row));return{items,coverage:'company-only'};
     }
     private async change(principalId: string, id: string, input: { revision: string; reason: string }, action: string, mutate: (row: any, actor: Actor, client: any) => Promise<void>) {
         const actor = await this.actor(principalId); await this.row(actor, id, true);
@@ -109,6 +112,7 @@ export class CapabilityMarket {
             await client.query('BEGIN'); await this.host.organization.lock(client);
             const currentActor = await this.actor(principalId, client as any), row = (await client.query('SELECT * FROM market_assets WHERE id=$1 FOR UPDATE', [id])).rows[0];
             if (!this.reviewer(currentActor, row)) fail('PERMISSION_DENIED', 'Capability governance is outside your scope');
+            if(!await this.sourceVisible(currentActor.id,row,client))fail('PERMISSION_DENIED','Candidate sources changed');
             if (this.revision(row) !== input.revision) fail('CONFLICT', 'Capability changed; reload its revision');
             await mutate(row, currentActor, client);
             await client.query('UPDATE market_assets SET state=$2,data=$3,revision=revision+1 WHERE id=$1', [id, row.state, JSON.stringify(row.data)]);
@@ -139,7 +143,7 @@ export class CapabilityMarket {
         const decoded = decodePackage(await Promise.all(candidate.data.files.map(async (f: any) => ({ path: f.path, contentBase64: (await readFile(resolve(candidate.data.directory, f.path))).toString('base64') }))));
         if (decoded.digest !== candidate.digest || candidate.data.review.digest !== candidate.digest) fail('CONFLICT', 'Reviewed package contents changed');
         let resource: any;
-        if (candidate.kind === 'skill') resource = await this.host.resources.create(actor.id, { title: candidate.data.name, kind: 'skill', domain: 'company-skills', body: await readFile(resolve(candidate.data.directory, 'SKILL.md'), 'utf8'), access: { scope: 'personal', readerIds: [] }, idempotencyKey: 'market-publication:' + id, sourceRefs: ['market:' + id, 'contributor:' + candidate.owner_id] });
+        if (candidate.kind === 'skill') resource = await this.host.resources.create(actor.id, { title: candidate.data.name, kind: 'skill', domain: 'company-skills', body: await readFile(resolve(candidate.data.directory, 'SKILL.md'), 'utf8'), access: { scope: 'personal', readerIds: [] }, idempotencyKey: 'market-publication:' + id, sourceRefs: ['market:' + id, 'contributor:' + candidate.owner_id] },candidate.data.dependencies?{sources:candidate.data.dependencies}:undefined);
         else await this.host.installPlugin(candidate.data.directory, actor.id);
         return this.change(principalId, id, input, 'published', async (row, publisher, client) => {
             if (row.state !== 'approved' || row.digest !== decoded.digest) fail('CONFLICT', 'Publication candidate changed');
@@ -148,8 +152,10 @@ export class CapabilityMarket {
             if (grants.toolRefs.some(tool => !declared.has(tool)) || grants.services.some(service => !(inspection as any).manifest?.permissions.includes(service))) fail('INVALID_INPUT', 'Grants exceed the reviewed plugin declaration');
             if ((grants.toolRefs.length || grants.services.length) && !grants.allCompany && !grants.principalIds.length && !grants.presetIds.length && !grants.departmentIds.length) fail('INVALID_INPUT', 'Select an explicit grant audience');
             if (resource) {
+                if(row.data.dependencies){const people=(await client.query("SELECT data FROM actors WHERE data->>'companyId'=$1 AND (data->>'active')::boolean=true",[publisher.companyId])).rows;for(const person of people)if(this.visible(person.data,row)&&!await this.sourceVisible(person.data.id,row,client))fail('PERMISSION_DENIED','Publication audience cannot read every source; re-author from shareable evidence');}
                 const access = { scope: row.data.scope, readerIds: row.data.scope === 'personal' ? [row.owner_id] : [], ...(row.data.scope === 'department' ? { departmentId: row.data.departmentId } : {}) };
                 await client.query('UPDATE company_resources SET access=$2,access_epoch=access_epoch+1,updated_at=now() WHERE id=$1', [resource.id, JSON.stringify(access)]); row.data.resourceRef = { id: resource.id, version: resource.version };
+                await this.host.resourceIndex.schedule(client,resource.id,'market-published');
             }
             row.data.grants = grants; row.state = 'published'; row.data.publishedBy = publisher.id;
         });
@@ -159,7 +165,7 @@ export class CapabilityMarket {
         return this.change(principalId, id, input, input.state, async (row, _actor, client) => {
             if (!['published', 'suspended'].includes(row.state)) fail('CONFLICT', 'Only published releases can change availability');
             row.state = input.state;
-            if (row.data.resourceRef) await client.query('UPDATE company_resources SET active=$2,access_epoch=access_epoch+1,updated_at=now() WHERE id=$1', [row.data.resourceRef.id, input.state === 'published']);
+            if (row.data.resourceRef){await client.query('UPDATE company_resources SET active=$2,access_epoch=access_epoch+1,updated_at=now() WHERE id=$1', [row.data.resourceRef.id, input.state === 'published']);await this.host.resourceIndex.schedule(client,row.data.resourceRef.id,'market-state-changed');}
         });
     }
     private audience(actor: Actor, agent: Agent, grants: MarketGrants) { return grants.allCompany || grants.principalIds.includes(actor.id) || !!agent.preset && grants.presetIds.includes(agent.preset.id) || !!actor.departmentId && grants.departmentIds.includes(actor.departmentId); }
@@ -176,6 +182,7 @@ export class CapabilityMarket {
             if (contentHash(current) !== contentHash(agent) || this.host.hasActiveInvocation(agentId) || (await client.query("SELECT 1 FROM runs WHERE agent_id=$1 AND state='running'", [agentId])).rowCount) fail('CONFLICT', 'Finish the active turn before changing capabilities');
             const release = (await client.query('SELECT * FROM market_assets WHERE id=$1 FOR SHARE', [id])).rows[0];
             if (release.state !== 'published' || !this.visible(await this.actor(owner.id, client as any), release)) fail('CONFLICT', 'Release is no longer available');
+            if(!await this.sourceVisible(freshOwner.id,release,client))fail('PERMISSION_DENIED','Release sources changed');
             const releaseGrants=release.data.grants as MarketGrants;
             if((releaseGrants.principalIds.length||releaseGrants.presetIds.length||releaseGrants.departmentIds.length||releaseGrants.allCompany)&&!this.audience(freshOwner,current,releaseGrants))fail('PERMISSION_DENIED','This release is currently limited to the approved pilot audience');
             const prior = (await client.query('SELECT * FROM market_installations WHERE asset_id=$1 AND agent_id=$2', [id, agentId])).rows[0];
@@ -200,7 +207,7 @@ export class CapabilityMarket {
         const { actor, agent } = await this.host.authorize(principalId, agentId, 'read');
         if (actor.id !== agent.ownerId && actor.role !== 'admin') fail('PERMISSION_DENIED', 'Capability inventory is private to the job');
         const rows = (await this.host.db.pool.query('SELECT a.* FROM market_installations i JOIN market_assets a ON a.id=i.asset_id WHERE i.agent_id=$1 AND i.active=true ORDER BY a.created_at', [agentId])).rows;
-        return { items: rows.filter(row => this.visible(actor, row)).map(row => this.dto(row)) };
+        const items=[];for(const row of rows)if(this.visible(actor,row)&&await this.sourceVisible(actor.id,row))items.push(this.dto(row));return{items};
     }
     async skill(principalId: string, agentId: string, id: string, offset = 0,path='SKILL.md') {
         const { actor, agent } = await this.host.authorize(principalId, agentId);
