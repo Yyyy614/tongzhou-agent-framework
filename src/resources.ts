@@ -212,7 +212,7 @@ export class Resources {
             const available = Math.max(0, maxChars - modelContext.length - header.length), body = resource.body.slice(0, available);
             if (body.length) modelContext += header + body;
             truncated ||= body.length < resource.totalChars;
-            sources.push({ id: resource.id,title:resource.title,domain:resource.domain,version: resource.version, digest: resource.digest, revision: resource.revision,sourceAuthority:resource.sourceAuthority,offset:resource.offset??0,nextOffset:body.length<resource.body.length?(resource.offset??0)+body.length:resource.nextOffset, includedChars: body.length,omission:body.length<resource.totalChars?'excerpt-only':null });
+            sources.push({ id: resource.id,title:resource.title,domain:resource.domain,freshness:resource.freshness,version: resource.version, digest: resource.digest, revision: resource.revision,sourceAuthority:resource.sourceAuthority,offset:resource.offset??0,nextOffset:body.length<resource.body.length?(resource.offset??0)+body.length:resource.nextOffset, includedChars: body.length,omission:body.length<resource.totalChars?'excerpt-only':null });
         }
         const memoryRefs: any[] = [];
         for (const noteId of input.noteIds ?? []) {
@@ -226,7 +226,7 @@ export class Resources {
         const id = randomUUID(), record = { ...input,authorizationGeneration, maxChars, sources, memoryRefs,recall:recallExplanation,workMemoryIncluded:workMemory?.included??false, workMemoryRef:workMemory?.ref??null,workMemoryResults:workMemory?.resultRefs??[],workMemoryOmissions:workMemory?.omissions??[],workRevision: work ? this.workFence(work) : null };
         await this.host.db.pool.query('INSERT INTO context_packs(id,company_id,principal_id,agent_id,data) VALUES($1,$2,$3,$4,$5)', [id, actor.companyId, actor.id, agentId, JSON.stringify(record)]);
         if(modelContext.length>maxChars)fail('CONTEXT_BUDGET_EXCEEDED','Required context and coverage explanation exceed the budget');
-        return { id, agentId,authorizationGeneration,query:input.query, workId: input.workId ?? null, sources, memoryRefs,recall:recallExplanation,workMemoryIncluded:record.workMemoryIncluded,workMemoryRef:record.workMemoryRef,workMemoryResults:record.workMemoryResults,workMemoryOmissions:record.workMemoryOmissions, maxChars, usedChars: modelContext.length, truncated, modelContext, asOf: new Date().toISOString() };
+        return { id, agentId,authorizationGeneration,query:input.query, workId: input.workId ?? null, workControlRevision:work?.controlRevision,sources, memoryRefs,recall:recallExplanation,workMemoryIncluded:record.workMemoryIncluded,workMemoryRef:record.workMemoryRef,workMemoryResults:record.workMemoryResults,workMemoryOmissions:record.workMemoryOmissions, maxChars, usedChars: modelContext.length, truncated, modelContext, asOf: new Date().toISOString() };
     }
     async pack(principalId: string, id: string) {
         requireUuid(id); const actor = await this.actor(principalId), row = (await this.host.db.pool.query('SELECT * FROM context_packs WHERE id=$1 AND company_id=$2 AND principal_id=$3', [id, actor.companyId, actor.id])).rows[0];

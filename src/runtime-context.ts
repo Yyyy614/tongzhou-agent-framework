@@ -20,7 +20,7 @@ export class RuntimeContext {
     readonly messages: any[];
     private pending: any[] = [];
     private receipts = new Map<string, any>();
-    private expanded: Array<{id:string;revision:string;version:number;sourceAuthority:string|null;metadataOnly:boolean}> = [];
+    private expanded: Array<{id:string;revision:string;version:number;sourceAuthority:string|null;metadataOnly:boolean;freshness:string}> = [];
     private installedSnapshot='';
     readonly memory: Array<{noteId:string;version:number}> = [];
     requestId?:string;
@@ -31,7 +31,7 @@ export class RuntimeContext {
     beginRead(name:string,input:any){
         if(!['resource_read','resource_index','resource_recall','skill_read','skill_index','memory_search','memory_read','work_memory_read','plugin_read'].includes(name))return;
         if(this.reading.reads>=this.reading.maxReads||this.reading.chars>=this.reading.maxChars)fail('CONTEXT_BUDGET_EXCEEDED','本轮读取预算已用完，请缩小范围或开始新的工作回合。');this.reading.reads++;
-        if(input.offset){const page=this.pages.get((name==='work_memory_read'?'work-memory:'+this.pack.workId+':'+(input.section??'summary'):(input.id??input.noteId)+'@'+(input.version??input.path??'SKILL.md')));if(!page||page.next!==input.offset||page.depth>=this.reading.maxDepth)fail('CONTEXT_BUDGET_EXCEEDED','分页展开超出已确认的续读范围或深度，请缩小任务。');}
+        if(input.offset&&['resource_read','skill_read','memory_read','work_memory_read'].includes(name)){const page=this.pages.get((name==='work_memory_read'?'work-memory:'+this.pack.workId+':'+(input.section??'summary'):(input.id??input.noteId)+'@'+(input.version??input.path??'SKILL.md')));if(!page||page.next!==input.offset||page.depth>=this.reading.maxDepth)fail('CONTEXT_BUDGET_EXCEEDED','分页展开超出已确认的续读范围或深度，请缩小任务。');}
     }
     readAllowance(){return Math.max(1,Math.min(4000,this.reading.maxChars-this.reading.chars-1200));}
     remainingReads(){return Math.max(1,this.reading.maxReads-this.reading.reads+1);}
@@ -60,10 +60,10 @@ export class RuntimeContext {
         await this.host.resources.pack(this.actor.id, this.pack.id);
         if(this.pack.workId){const work=await this.host.coordination?.get(this.actor.id,this.pack.workId);if(!work||work.controlMode!=='active'||['reconciliation_required','needs_attention','stopped'].includes(work.state))fail('CONFLICT','Work requires a human decision before another execution');}
         const current=await this.host.market.installed(this.actor.id,this.agent.id);if(contentHash(current.items.map(i=>({id:i.id,digest:i.digest})))!==this.installedSnapshot)fail('CONFLICT','Installed company capabilities changed; start a fresh turn');
-        for (const ref of this.expanded) { const current = await this.host.resources.read(this.actor.id, ref.id, ref.version,0,1); if (current.revision !== ref.revision || (current.sourceAuthority??null)!==ref.sourceAuthority || !ref.metadataOnly&&current.freshness !== 'current') fail('CONFLICT','An expanded source changed; start a fresh turn'); }
+        for (const ref of this.expanded) { const current = await this.host.resources.read(this.actor.id, ref.id, ref.version,0,1); if (current.revision !== ref.revision || (current.sourceAuthority??null)!==ref.sourceAuthority || current.freshness!==ref.freshness || !ref.metadataOnly&&current.freshness !== 'current') fail('CONFLICT','An expanded source changed; start a fresh turn'); }
         for (const ref of this.memory) if ((await this.host.readMemory({principalId:this.actor.id,agentId:this.agent.id,noteId:ref.noteId})).version !== ref.version) fail('CONFLICT','An expanded memory changed; start a fresh turn');
     }
-    async resource(value: any,metadataOnly=false) {const ref={id:value.id,revision:value.revision,version:value.version,sourceAuthority:value.sourceAuthority??null,metadataOnly};if(!this.expanded.some(s=>contentHash(s)===contentHash(ref)))this.expanded.push(ref);await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,await this.host.provenance.resourceOrigins(value)); }
+    async resource(value: any,metadataOnly=false) {const ref={id:value.id,revision:value.revision,version:value.version,sourceAuthority:value.sourceAuthority??null,metadataOnly,freshness:value.freshness};if(!this.expanded.some(s=>contentHash(s)===contentHash(ref)))this.expanded.push(ref);await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,await this.host.provenance.resourceOrigins(value)); }
     async note(value: any) { this.memory.splice(0,this.memory.length,...this.memory.filter(n=>n.noteId!==value.noteId),{noteId:value.noteId,version:value.version});await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,await this.host.memory.origin(this.agent.id,value.noteId,value.version)); }
     async wroteMemory(value:any){
         const note=await this.host.readMemory({principalId:this.actor.id,agentId:this.agent.id,noteId:value.noteId});await this.note(note);

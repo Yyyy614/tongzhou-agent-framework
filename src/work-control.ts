@@ -28,6 +28,7 @@ export class WorkControl{
         return{actor,snapshot};
     }
     async guard(request:TaskRequest,client:Pick<PoolClient,'query'>=this.host.db.pool){
+        if(request.executionProfile==='memory-maintenance'){const row=(await client.query('SELECT control_revision,control_mode FROM work_items WHERE id=$1',[request.contextWorkId])).rows[0];if(!row||row.control_mode!=='active'||row.control_revision!==request.workControlRevision)fail('CANCELLED','Work control closed this maintenance request');}
         if(!request.workId)return;
         await this.host.events.authorizeWork(request.workId,request.agentId,client,request.workInputId);
         const row=(await client.query('SELECT current_round,control_revision,control_mode,action_scope FROM work_items WHERE id=$1',[request.workId])).rows[0];
@@ -55,7 +56,7 @@ export class WorkControl{
     async guardRun(runId:string){
         if(!/^[a-f0-9-]{36}$/iu.test(runId))return;
         const run=(await this.host.db.pool.query('SELECT data FROM runs WHERE id=$1',[runId])).rows[0];
-        if(!run?.data.workId)return;
+        if(!run?.data.workId&&!run?.data.contextWorkId)return;
         const task=(await this.host.db.pool.query('SELECT * FROM tasks WHERE id=$1',[run.data.taskId])).rows[0];
         if(!task)fail('CANCELLED','Work task no longer exists');
         await this.guard({...task.data,principalId:task.data.executionPrincipalId,agentId:task.agent_id,taskId:task.id});
