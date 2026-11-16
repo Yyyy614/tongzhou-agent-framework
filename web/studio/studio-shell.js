@@ -1,5 +1,5 @@
 import{h,icon,button,avatar,modal}from'./ui.js';
-export const routeGroups=[['工作',['overview','work','events','assistant']],['团队',['organization','employees','agents']],['能力与知识',['market','resources','plugins','memory']],['连接',['entries','channels']],['记录',['logs','usage']]];
+export const routeGroups=[['工作',['overview','work','events','assistant']],['团队',['organization','employees','agents']],['能力与知识',['market','resources','context','plugins','memory']],['连接',['entries','channels']],['记录',['logs','usage']]];
 export function studioShell({me,state,routes,root,brand,closeSidebar,refresh,logout,search}){
     const nav=h('nav',{'aria-label':'管理后台导航'});
     for(const[label,ids]of routeGroups){const items=routes.filter(r=>ids.includes(r.id)).sort((a,b)=>ids.indexOf(a.id)-ids.indexOf(b.id));if(!items.length)continue;nav.append(h('section',{class:'studio-nav-group'},h('h2',{},label),...items.map(r=>h('a',{href:'#'+r.id,'data-route':r.id,'aria-label':r.name,title:r.name,onClick:closeSidebar,class:r.id===state.page?'active':''},icon(r.icon,19),h('span',{class:'nav-name'},r.name),r.count?h('span',{class:'nav-count','data-count':r.count},'—'):null))));}

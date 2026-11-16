@@ -86,6 +86,7 @@ async function render() {
         liveView?.start();
         for (const route of routes) {
             const link = nav.querySelector('[data-route="' + route.id + '"]');
+            if(!link)continue;
             link.classList.toggle('active', route.id === state.page);
             if (route.count) {
                 link.querySelector('.nav-count').textContent = String({ employees, agents, plugins }[route.count].length);

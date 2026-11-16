@@ -89,13 +89,14 @@ function CompanyPanel({useWork,refresh,openAccount,call,openChat}){
 export const inject=['slots','layout','locale','theme'];
 export function apply(ctx){
     const bridge=window.companyHarness;if(!bridge)throw Error('Company desktop IPC is unavailable');
+    const callBridge=async(method,input)=>{if(!bridge.invoke)return bridge.call(method,input);const response=await bridge.invoke(method,input);if(!response.ok)throw Object.assign(new Error(response.error.message),{code:response.error.code,status:response.error.status});return response.result;};
     const store=createSnapshotStore({data:null,error:'',loading:false});let disposed=false,pending,timer,operation=Promise.resolve();
     // Polls and inspectors share one identity-scoped bridge. Never race them against each other.
     const enqueue=fn=>{const next=operation.then(fn);operation=next.catch(()=>{});return next;};
     const visible=()=>ctx.layout.panelInfo.getSnapshot().activePanelId==='company-work';
-    const refresh=()=>{if(pending)return pending;store.set({...store.getSnapshot(),loading:true});pending=enqueue(()=>bridge.call('work-center')).then(data=>{if(!disposed)store.set({data,error:'',loading:false});},error=>{if(!disposed)store.set({...store.getSnapshot(),error:error.message,loading:false});}).finally(()=>{pending=undefined;clearTimeout(timer);if(!disposed&&visible())timer=setTimeout(refresh,4000);});return pending;};
+    const refresh=()=>{if(pending)return pending;store.set({...store.getSnapshot(),loading:true});pending=enqueue(()=>callBridge('work-center')).then(data=>{if(!disposed)store.set({data,error:'',loading:false});},error=>{if(!disposed)store.set({...store.getSnapshot(),error:error.message,loading:false});}).finally(()=>{pending=undefined;clearTimeout(timer);if(!disposed&&visible())timer=setTimeout(refresh,4000);});return pending;};
     const call=(kind,id,data)=>enqueue(async()=>{
-        const result=await bridge.call('action',{kind,id,data});
+        const result=await callBridge('action',{kind,id,data});
         if(kind==='context-select'&&!disposed){const current=store.getSnapshot();if(current.data)store.set({...current,data:{...current.data,workContext:{resources:result.sources.map(ref=>({id:ref.id,version:ref.version})),...(result.workId?{workId:result.workId}:{})}}});}
         return result;
     });
@@ -103,7 +104,7 @@ export function apply(ctx){
     ctx.effect(()=>ctx.theme.overrideTokens('company-studio',{'--dsw-alias-brand-primary-new-colorprimary-new-color':{light:'#087f73',dark:'#65cfbc'},'--dsw-alias-button-info-fill':{light:'#087f73',dark:'#237d70'},'--dsw-alias-button-info-hover':{light:'#06695f',dark:'#2d9383'}}),'company-work: shared accent');
     ctx.effect(()=>{const changed=()=>{clearTimeout(timer);if(visible())void refresh();};const stop=ctx.layout.panelInfo.subscribe(changed);changed();return()=>{disposed=true;clearTimeout(timer);stop();};},'company-work: refresh');
     ctx.effect(()=>bridge.onNavigate(()=>ctx.layout.selectPanel('company-work')),'company-work: native navigation');
-    ctx.slots.inject('main',()=>{const dispose=ctx.slots.register({name:'main',key:'company-work',inject:()=>({hooks:{work:store},refresh,openAccount:()=>enqueue(()=>bridge.call('account')),call,openChat:()=>ctx.layout.selectPanel(null)})},CompanyPanel);queueMicrotask(()=>{if(!disposed)ctx.layout.selectPanel('company-work');});return dispose;});
+    ctx.slots.inject('main',()=>{const dispose=ctx.slots.register({name:'main',key:'company-work',inject:()=>({hooks:{work:store},refresh,openAccount:()=>enqueue(()=>callBridge('account')),call,openChat:()=>ctx.layout.selectPanel(null)})},CompanyPanel);queueMicrotask(()=>{if(!disposed)ctx.layout.selectPanel('company-work');});return dispose;});
     ctx.slots.inject('sidebar.panellist',()=>ctx.slots.register({name:'sidebar.panellist',id:'company-work',order:-10,label:()=> '工作中心'},PanelIcon));
     ctx.slots.inject('sidebar.brand.mark',()=>ctx.slots.register({name:'sidebar.brand.mark'},BrandMark));
     ctx.slots.inject('conversation.hero.brand.mark',()=>ctx.slots.register({name:'conversation.hero.brand.mark'},HeroMark));

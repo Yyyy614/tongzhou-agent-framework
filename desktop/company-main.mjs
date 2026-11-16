@@ -130,7 +130,7 @@ async function run() {
             else if(method==='logout'){result=await company.logout();await showAccount();}
             else throw Error('Unsupported company operation');
             return{ok:true,result};
-        }catch(error){return{ok:false,error:{code:error.code??'UNAVAILABLE',message:error.code?error.message:'公司操作未完成，请重试或联系管理员'}};}
+        }catch(error){return{ok:false,error:{code:error.code??'UNAVAILABLE',...(Number.isInteger(error.status)?{status:error.status}:{}),message:error.code?error.message:'公司操作未完成，请重试或联系管理员'}};}
     });
     ipcMain.handle('company:directory',async event=>{trusted(event);const picked=await dialog.showOpenDialog(window,{properties:['openDirectory']});return picked.canceled?null:picked.filePaths[0];});
     window.webContents.setWindowOpenHandler(()=>({action:'deny'}));
