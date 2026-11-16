@@ -106,24 +106,27 @@ export class WorkContinuity {
         if(!row)fail('NOT_FOUND','Work input does not exist');return{id:row.id,round:row.round,principalId:row.principal_id,...row.data,createdAt:row.created_at};
         });
     }
-    async checkpointForTask(principalId:string,taskId:string){
+    async checkpointForTask(principalId:string,taskId:string,runId?:string){
+        const sources:import('./provenance.js').SourceOrigin[]=[];let executionAgent='';
         const projection=await this.read(async client=>{
         requireUuid(taskId);
         const task=(await client.query('SELECT * FROM tasks WHERE id=$1',[taskId])).rows[0];
         if(!task?.data.workInputId)fail('NOT_FOUND','Task has no continuation checkpoint');
         const {actor,agent}=await this.host.authorize(principalId,task.agent_id,'read',client);
-        if(actor.id!==agent.ownerId||task.data.executionPrincipalId!==actor.id)fail('PERMISSION_DENIED','Checkpoint belongs to another executor');
+        if(actor.id!==agent.ownerId||task.data.executionPrincipalId!==actor.id)fail('PERMISSION_DENIED','Checkpoint belongs to another executor');executionAgent=agent.id;
         const input=(await client.query('SELECT data FROM work_inputs WHERE id=$1 AND work_id=$2',[task.data.workInputId,task.data.workId])).rows[0];
         const checkpoint=(await client.query('SELECT * FROM work_checkpoints WHERE id=$1 AND work_id=$2',[input?.data.receipt.checkpointRef,task.data.workId])).rows[0];
         if(!checkpoint)fail('NOT_FOUND','Checkpoint does not exist');
         const reference=checkpoint.data.confirmedTasks.find((t:any)=>t.agentId===agent.id&&t.ownerId===actor.id);
         const previous=reference?(await client.query('SELECT data FROM tasks WHERE id=$1 AND agent_id=$2',[reference.taskId,agent.id])).rows[0]:null;
         const confirmedActions=checkpoint.data.resume?(await client.query("SELECT a.id,a.data->>'toolRef' AS tool,a.data->>'inputHash' AS input_hash,a.data->'dependencies' AS dependencies,left((a.data->'value')::text,1000) AS receipt,coalesce(a.data->>'confirmationSource','host') AS source FROM work_actions a JOIN tasks t ON t.id=a.task_id WHERE a.work_id=$1 AND a.action_scope=$2 AND a.agent_id=$3 AND t.data->>'executionPrincipalId'=$4 AND a.state='succeeded' ORDER BY a.created_at LIMIT 32",[task.data.workId,checkpoint.data.actionScope,agent.id,actor.id])).rows:[];
-        for(const action of confirmedActions){if(action.dependencies&&!(await this.host.provenance.status(actor.id,action.dependencies,client)).visible){action.receipt='回执受当前资料权限保护；已完成状态保留，不得重做。';action.receiptAvailable=false;delete action.input_hash;}delete action.dependencies;}
+        for(const action of confirmedActions){if(action.dependencies&&!(await this.host.provenance.status(actor.id,action.dependencies,client)).visible){action.receipt='回执受当前资料权限保护；已完成状态保留，不得重做。';action.receiptAvailable=false;delete action.input_hash;}if(action.receiptAvailable!==false)sources.push(...(action.dependencies??[{kind:'unknown',id:'legacy-action:'+action.id,ownerId:actor.id,companyId:actor.companyId}]));delete action.dependencies;}
         await client.query('INSERT INTO audit(id,type,data) VALUES($1,$2,$3)',[randomUUID(),'work.checkpoint_read',JSON.stringify({companyId:actor.companyId,principalId:actor.id,agentId:agent.id,workId:task.data.workId,taskId,checkpointId:checkpoint.id})]);
         return{checkpointId:checkpoint.id,sourceRound:checkpoint.round,sourceRevision:checkpoint.revision,confirmedTask:reference?{...reference,summary:previous?.data.resultFormat?'执行记录待整理或核实':String(previous?.data.output??'').slice(0,2000)}:null,confirmedActions,actionReceiptsLimit:32,receiptExcerptChars:1000,summaryTruncated:!previous?.data.resultFormat&&String(previous?.data.output??'').length>2000,notice:'These are confirmed previous results, not permission to replay actions. Execute only the new authorized instruction.'};
         });
         const result=projection.confirmedTask?await this.host.results.view(principalId,projection.confirmedTask.taskId):null;
+        if(projection.confirmedTask){const row=(await this.host.db.pool.query('SELECT dependencies FROM task_results WHERE task_id=$1',[projection.confirmedTask.taskId])).rows[0];const origins=row?.dependencies??[{kind:'unknown',id:'legacy-checkpoint:'+projection.confirmedTask.taskId,ownerId:principalId}];if((await this.host.provenance.status(principalId,origins)).visible)sources.push(...origins);}
+        if(runId&&sources.length)await this.host.provenance.add(runId,principalId,executionAgent,this.host.provenance.unique(sources));
         return result?{...projection,summaryTruncated:false,confirmedTask:{...projection.confirmedTask,summary:result.summary,result}}:projection;
     }
 }

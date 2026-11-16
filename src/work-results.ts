@@ -46,19 +46,19 @@ export class WorkResults {
         const dependencies=await this.host.provenance.status(principalId,row.dependencies);
         const reportVisible=row.dependencies?dependencies.visible:own;
         const visible = async (ref: ResourceRef) => {
-            try { const source = await this.host.resources.read(principalId, ref.id, ref.version); return { id: source.id, version: source.version, digest: source.digest, title: source.title, freshness: source.freshness }; }
+            try { const source = await this.host.resources.read(principalId, ref.id, ref.version); return { id: source.id, version: source.version, digest: source.digest, title: source.title, freshness: source.derivedValidity==='current'?source.freshness:'stale' }; }
             catch (error) { if ((error as any).code === 'NOT_FOUND') return null; throw error; }
         };
         const fact = async (value: ReportedFact) => {
             if (!own && !value.refs.length) return null;
             const refs = await Promise.all(value.refs.map(visible)); if (refs.some(r => !r)) return null;
-            return { text: value.text, refs, origin: 'agent_reported', freshness: refs.some(r => r!.freshness !== 'current') ? 'stale' : 'current' };
+            return { text: value.text, refs, origin: 'agent_reported', freshness: !dependencies.current||refs.some(r => r!.freshness !== 'current') ? 'stale' : 'current' };
         };
         if(reportVisible){for (const value of row.reported.facts) { const item = await fact(value); if (item) facts.push(item); }
         for (const value of row.reported.artifacts) { const item = await visible(value); if (item) artifacts.push(item); }
         for (const value of row.reported.issues) { if (typeof value === 'string') { if (own) issues.push(value); } else { const item = await fact(value); if (item) issues.push(item.text); } }}
         const process = await visible(row.process_ref), state = task.state;
-        const summary = [state === 'succeeded' ? '执行已结束，等待人工核对' : ({ running: '执行中', failed: '执行失败', reconciliation_required: '执行结果待核实', waiting_approval: '等待审批', cancelled: '已取消' } as Record<string, string>)[state] ?? '工作已登记', ...facts.filter(f => f.freshness === 'current').map(f => f.text), ...(artifacts.length ? ['可查看成果 ' + artifacts.length + ' 项'] : []), ...(issues.length ? ['需关注 ' + issues.length + ' 项'] : [])].join('；');
-        return { taskId, control: { ...row.control, state }, facts, artifacts, issues, coverage: 'authorized-results', summary, processAvailable: !!process, ...(process ? { processRef: row.process_ref } : {}), createdAt: row.created_at };
+        const summary = [state === 'succeeded' ? '执行已结束，等待人工核对' : ({ running: '执行中', failed: '执行失败', reconciliation_required: '执行结果待核实', waiting_approval: '等待审批', cancelled: '已取消' } as Record<string, string>)[state] ?? '工作已登记', ...facts.filter(f => f.freshness === 'current').map(f => f.text),...(!dependencies.current?['历史依据已变化，请重新核实结论']:[]), ...(artifacts.length ? ['可查看成果 ' + artifacts.length + ' 项'] : []), ...(issues.length ? ['需关注 ' + issues.length + ' 项'] : [])].join('；');
+        return { taskId, control: { ...row.control, state }, facts, artifacts, issues, coverage: 'authorized-results', sourceValidity:dependencies.current?'current':'source-changed',summary, processAvailable: !!process, ...(process ? { processRef: row.process_ref } : {}), createdAt: row.created_at };
     }
 }

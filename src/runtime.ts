@@ -381,7 +381,7 @@ export class HarnessRuntime {
         if(workRequest?.workInputId&&parentTaskId&&this.host.coordination){
             tools.push({name:'work_checkpoint',description:'Read your own confirmed previous task result and its bounded reference, only when this continuation needs it. This does not authorize replaying prior actions.',inputSchema:{type:'object',additionalProperties:false,properties:{}},execute:async(input)=>{
                 if(Object.keys(input).length)fail('INVALID_INPUT','Checkpoint is bound to the current task');
-                return this.host.coordination!.continuity.checkpointForTask(actor.id,parentTaskId);
+                return this.host.coordination!.continuity.checkpointForTask(actor.id,parentTaskId,runId);
             }});
         }
         if (this.queue && (parentTaskId || describing) && agent.delegates?.length) {

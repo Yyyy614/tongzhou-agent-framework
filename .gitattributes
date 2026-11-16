@@ -6,3 +6,5 @@
 *.woff2 binary
 *.cmd text eol=crlf
 *.bat text eol=crlf
+
+*.sh text eol=lf
