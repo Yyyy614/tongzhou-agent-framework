@@ -174,6 +174,7 @@ export class HarnessRuntime {
                             await scope.context?.note(output);
                         }
                         if(tool.name==='resource_read'||tool.name==='resource_create')await scope.context?.resource(output);
+                        if(tool.name==='resource_index')for(const item of (output as any).items)await scope.context?.resource(item,true);
                         if(tool.name==='skill_read'&&(output as any)?.resource)await scope.context?.resource((output as any).resource);
                         const written=tool.name==='memory_write'?output:tool.companyRef&&tool.effect==='host'?(output as any)?.output:null;
                         if(written&&typeof (written as any).noteId==='string'&&Number.isInteger((written as any).version))await scope.context?.wroteMemory(written);

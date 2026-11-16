@@ -20,7 +20,7 @@ export class RuntimeContext {
     readonly messages: any[];
     private pending: any[] = [];
     private receipts = new Map<string, any>();
-    private expanded: Array<{id:string;revision:string;version:number}> = [];
+    private expanded: Array<{id:string;revision:string;version:number;sourceAuthority:string|null;metadataOnly:boolean}> = [];
     private installedSnapshot='';
     readonly memory: Array<{noteId:string;version:number}> = [];
     requestId?:string;
@@ -39,17 +39,17 @@ export class RuntimeContext {
         for(const ref of pack.memoryRefs)await context.note(ref);
         if(pack.workMemoryRef){const note=await host.workMemory.origin(actor.id,pack.workMemoryRef.workId,agent.id);if(note)await host.provenance.add(runId,actor.id,agent.id,[note.ref,...note.sources]);}
         for(const result of pack.workMemoryResults??[])await context.resource(await host.resources.read(actor.id,result.ref.id,result.ref.version,0,1));
-        for(const item of directory.items.slice(0,12))if(item.freshness==='current')await context.resource(item);
+        for(const item of directory.items.slice(0,12))await context.resource(item,true);
         return context;
     }
     async validate() {
         await this.host.resources.pack(this.actor.id, this.pack.id);
         if(this.pack.workId){const work=await this.host.coordination?.get(this.actor.id,this.pack.workId);if(!work||work.controlMode!=='active'||['reconciliation_required','needs_attention','stopped'].includes(work.state))fail('CONFLICT','Work requires a human decision before another execution');}
         const current=await this.host.market.installed(this.actor.id,this.agent.id);if(contentHash(current.items.map(i=>({id:i.id,digest:i.digest})))!==this.installedSnapshot)fail('CONFLICT','Installed company capabilities changed; start a fresh turn');
-        for (const ref of this.expanded) { const current = await this.host.resources.read(this.actor.id, ref.id, ref.version); if (current.revision !== ref.revision || current.freshness !== 'current') fail('CONFLICT','An expanded source changed; start a fresh turn'); }
+        for (const ref of this.expanded) { const current = await this.host.resources.read(this.actor.id, ref.id, ref.version,0,1); if (current.revision !== ref.revision || (current.sourceAuthority??null)!==ref.sourceAuthority || !ref.metadataOnly&&current.freshness !== 'current') fail('CONFLICT','An expanded source changed; start a fresh turn'); }
         for (const ref of this.memory) if ((await this.host.readMemory({principalId:this.actor.id,agentId:this.agent.id,noteId:ref.noteId})).version !== ref.version) fail('CONFLICT','An expanded memory changed; start a fresh turn');
     }
-    async resource(value: any) { if(!this.expanded.some(s=>s.id===value.id&&s.version===value.version&&s.revision===value.revision))this.expanded.push({id:value.id,revision:value.revision,version:value.version});await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,await this.host.provenance.resourceOrigins(value)); }
+    async resource(value: any,metadataOnly=false) {const ref={id:value.id,revision:value.revision,version:value.version,sourceAuthority:value.sourceAuthority??null,metadataOnly};if(!this.expanded.some(s=>contentHash(s)===contentHash(ref)))this.expanded.push(ref);await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,await this.host.provenance.resourceOrigins(value)); }
     async note(value: any) { this.memory.splice(0,this.memory.length,...this.memory.filter(n=>n.noteId!==value.noteId),{noteId:value.noteId,version:value.version});await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,[{kind:'memory',id:value.noteId,agentId:this.agent.id,version:value.version}]); }
     async wroteMemory(value:any){
         const note=await this.host.readMemory({principalId:this.actor.id,agentId:this.agent.id,noteId:value.noteId});await this.note(note);
@@ -93,9 +93,10 @@ export class RuntimeContext {
         const call=this.pending.find(t=>!this.receipts.has(t.id)&&t.name==='mcp__company__'+name&&contentHash(t.input)===contentHash(input));
         if(call){
             this.receipts.set(call.id,{content:result.content,is_error:!!result.isError});
-            // This host acknowledgement only counts the already-attested model report.
-            // Unknown/plugin tool outputs remain private inputs, regardless of their citations.
-            if(name!=='work_report'||result.isError)await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,[{kind:'tool',id:call.id,ownerId:this.actor.id,companyId:this.actor.companyId,digest:contentHash(result)}]);
+            // These host outputs have their resource origins attested before this callback;
+            // work_report only counts the already-attested report. Plugin output is private.
+            const trackedHostOutput=['resource_read','resource_index','resource_create','skill_read','work_report'].includes(name)&&!result.isError;
+            if(!trackedHostOutput)await this.host.provenance.add(this.runId,this.actor.id,this.agent.id,[{kind:'tool',id:call.id,ownerId:this.actor.id,companyId:this.actor.companyId,digest:contentHash(result)}]);
         }
     }
     async dispatched(body:any,ordinal:number){this.requestId=await this.host.provenance.request(this.runId,this.actor.id,this.agent.id,ordinal,body,this.manifest());}

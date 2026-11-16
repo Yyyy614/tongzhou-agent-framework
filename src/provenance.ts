@@ -63,7 +63,11 @@ export class SourceProvenance {
     async request(runId:string,principalId:string,agentId:string,ordinal:number,body:unknown,manifest:any){
         const sources=await this.snapshot(runId);if(!sources)fail('CONFLICT','Model request has no host source ledger');
         const status=await this.status(principalId,sources);if(!status.visible)fail('CONFLICT','Model source access changed before dispatch');
-        const id=randomUUID(),data={...manifest,sources,requestHash:contentHash(body),requestChars:JSON.stringify(body).length,policy:'all-input-origins-v1'};
-        const row=(await this.host.db.pool.query('INSERT INTO model_context_requests(id,run_id,principal_id,agent_id,ordinal,data) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(run_id,ordinal) DO UPDATE SET data=EXCLUDED.data RETURNING id',[id,runId,principalId,agentId,ordinal,JSON.stringify(data)])).rows[0];return row.id as string;
+        const id=randomUUID(),data={...manifest,requestId:id,sources,requestHash:contentHash(body),requestChars:JSON.stringify(body).length,policy:'all-input-origins-v1'};
+        const inserted=(await this.host.db.pool.query('INSERT INTO model_context_requests(id,run_id,principal_id,agent_id,ordinal,data) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(run_id,ordinal) DO NOTHING RETURNING id',[id,runId,principalId,agentId,ordinal,JSON.stringify(data)])).rows[0];
+        if(inserted)return inserted.id as string;
+        const previous=(await this.host.db.pool.query('SELECT id,principal_id,agent_id,data FROM model_context_requests WHERE run_id=$1 AND ordinal=$2',[runId,ordinal])).rows[0];
+        if(!previous||previous.principal_id!==principalId||previous.agent_id!==agentId||contentHash(previous.data)!==contentHash({...data,requestId:previous.id}))fail('CONFLICT','A model request ordinal cannot replace its attested input');
+        return previous.id as string;
     }
 }
