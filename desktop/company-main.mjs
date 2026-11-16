@@ -7,7 +7,7 @@ import { DesktopProjectManager } from '../vendor/harness-desktop/project-manager
 import { serveWebDocument, authenticateWebHost, forwardWebRequest, removeLegacyHostCookies } from '../vendor/harness-desktop/web-document.ts';
 import { prepareHarnessProfile } from '../dist/harness-profile.js';
 import { createCompanySession } from '../client/company-session.mjs';
-import { desktopChrome, captionMenuPoint } from './chrome.mjs';
+import { desktopChrome, captionMenuPoint,desktopAppId } from './chrome.mjs';
 
 protocol.registerSchemesAsPrivileged([{ scheme: 'dsh-app', privileges: { standard: true, secure: true, supportFetchAPI: true, stream: true, corsEnabled: true } }]);
 const root = app.getAppPath();
@@ -17,7 +17,7 @@ if(config.dataNamespace!==undefined&&!/^[A-Za-z0-9_-]{1,40}$/u.test(config.dataN
 const dataDir = resolve(config.dataDir ?? join(app.getPath('appData'), 'CompanyHarness', config.dataNamespace??'default', scope));
 const productName=config.productName??'公司 Agent Harness';
 app.setName(productName);
-if(config.integratedChrome===true&&process.platform==='win32')app.setAppUserModelId('com.tongzhou.studio');
+if(config.integratedChrome===true&&process.platform==='win32')app.setAppUserModelId(desktopAppId(config));
 app.setPath('userData', join(dataDir, 'electron'));
 await mkdir(app.getPath('userData'), { recursive: true });
 if (!app.requestSingleInstanceLock()) app.exit(0);

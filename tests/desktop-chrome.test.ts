@@ -14,3 +14,5 @@ test('caption menu stays anchored after application zoom and rejects coordinates
     expect(()=>captionMenuPoint({x:900,y:36},2,{width:1240,height:860})).toThrow();
     expect(()=>captionMenuPoint({x:-1,y:20},1,{width:1240,height:860})).toThrow();
 });
+
+test('Windows v07 taskbar identity matches its isolated installer while older clients retain their identity',async()=>{const{desktopAppId}=await import('../desktop/chrome.mjs');expect(desktopAppId({integratedChrome:true,dataNamespace:'v07-company-test'})).toBe('com.tongzhou.framework.preview.v07');expect(desktopAppId({integratedChrome:true,dataNamespace:'v06-company-test'})).toBe('com.tongzhou.studio');});

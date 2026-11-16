@@ -1,5 +1,6 @@
 /** Modern window chrome is opt-in; deployed classic clients retain their window settings. */
 export const captionHeight=40;
+export function desktopAppId(config){return config.dataNamespace?.startsWith('v07-')?'com.tongzhou.framework.preview.v07':'com.tongzhou.studio';}
 export function desktopChrome(config,platform){
     if(config.integratedChrome!==true||platform!=='win32')return{};
     return{titleBarStyle:'hidden',titleBarOverlay:{height:captionHeight,color:'#f5f7f8',symbolColor:'#24332e'},autoHideMenuBar:true};
