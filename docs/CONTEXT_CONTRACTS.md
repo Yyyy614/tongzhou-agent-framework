@@ -82,3 +82,14 @@ interface MemorySource {
 同群多工作订阅并存。对象关联需管理员配置 correlationGroup、subjectSystems；只有受管身份的 Webhook/宿主事件及平台适配器可声明该命名空间的 subjectRef。跨人员另需 crossPrincipalCorrelation=true，并在关联、输入接纳及执行前核实参与权限，标题相似或模型建议不作为授权。关联组属于公司命名空间，不跨租户。来源调整、身份撤销、停止及等待仍由原控制路径复验。
 
 `POST /v1/events/:id/resolve` 可带 workId 确认现有工作，不带则明确创建新工作；请求必须带当前 revision 与 reason。`POST /v1/events/:id/association` 纠正后续关系，记录理由、版本和政策修订。已执行事件的原 workId、任务和回执不修改、不重放；associationWorkId 表达后续纠正。待确认候选只含当前人可参与的工作；隐藏候选和别人的事件正文不展示。后台 history 可追查判断与纠正理由。
+
+
+## 0.8 长期工作记忆与来源集合
+
+工作状态仍来自宿主；当前工作笔记、旧修订、归档条目、输入账本及经验候选分别保留。每次笔记写入创建不可变、带摘要校验的 source-set（version=1），以有向无环的父集合+本次新增来源保存完整沿袭。当前笔记只保存集合引用，不把所有历史来源内联。原依赖数组保留原记录，新写入兼容转为集合；不清历史，不提高旧512上限。
+
+来源集合按当前身份展开验证。目录 `GET /v1/source-sets/:id?limit=20&cursor=...` 使用绑定身份、集合版本和当前授权指纹的不透明续查；标题与引用均依当前授权。缓存只缓存不可变成员，权限和底层版本每次权威复查；集合修复/删除的数据库代数可使成员缓存失效。未知来源或校验预算不足保持待核实，不放行派生正文。当前同步验证预算为10000个集合节点/来源；超过预算明确要求专门核验，不承诺无限规模或生产负载。
+
+`GET /v1/work/:id/memory/:agentId/history` 分页列出历史修订，`?revision=N` 按授权读取历史正文。`POST .../organize` 接受 expectedRevision、idempotencyKey、changes[{section,index,reason}]：把选定的个人笔记条目归档，保留其他决定、阻塞、下一步和全部底层依赖。CAS、精确幂等回执及宿主停止条件沿用保存路径。归档不等于完成审批或动作。Harness tool work_memory_organize 使用同一契约与回合刷新。
+
+`POST /v1/work/:id/recipient-summary` 用接收者有权读取的成果引用、有限资料摘录和宿主状态独立整理进展，保留真实来源。没有把私人笔记、原报告或完整过程文本作为生成输入。当前采用确定性整理，无额外模型调用；摘录明确标为未核实结论，不从隐藏结果推断业务事实。候选经验仍走原独立审核与范围发布机制。

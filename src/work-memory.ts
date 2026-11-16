@@ -17,12 +17,16 @@ const item={type:'object',additionalProperties:false,required:['text','refs'],pr
 const items={type:'array',maxItems:12,items:item};
 export const workNoteSchema={type:'object',additionalProperties:false,required:['expectedRevision','idempotencyKey','goal','decisions','blockers','nextSteps','artifacts'],properties:{expectedRevision:{type:'integer',minimum:0},idempotencyKey:{type:'string',minLength:1,maxLength:160},goal:{type:'string',maxLength:800},decisions:items,blockers:items,nextSteps:items,artifacts:refs}};
 
+export const organizeSchema={type:'object',additionalProperties:false,required:['expectedRevision','idempotencyKey','changes'],properties:{expectedRevision:{type:'integer',minimum:1},idempotencyKey:{type:'string',minLength:1,maxLength:160},changes:{type:'array',minItems:1,maxItems:16,items:{type:'object',additionalProperties:false,required:['section','index','reason'],properties:{section:{enum:['decisions','blockers','nextSteps']},index:{type:'integer',minimum:0,maximum:11},reason:{type:'string',minLength:1,maxLength:500}}}}}};
+export interface NoteOrganization{expectedRevision:number;idempotencyKey:string;changes:Array<{section:'decisions'|'blockers'|'nextSteps';index:number;reason:string}>;}
 /** Work notes are revisioned private claims; confirmed execution state stays in A1/A2 tables. */
 export class WorkMemory {
     constructor(readonly host:Framework){}
     async open(){await this.host.db.pool.query(`
       CREATE TABLE IF NOT EXISTS work_memory_versions(id uuid PRIMARY KEY,company_id text NOT NULL,work_id uuid NOT NULL,principal_id text NOT NULL,agent_id text NOT NULL,revision integer NOT NULL,data jsonb NOT NULL,dependencies jsonb NOT NULL,request_key text UNIQUE NOT NULL,input_hash text NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(work_id,principal_id,agent_id,revision));
       CREATE TABLE IF NOT EXISTS work_context_bindings(company_id text NOT NULL,principal_id text NOT NULL,agent_id text NOT NULL,entry_key text NOT NULL,work_id uuid NOT NULL,updated_at timestamptz NOT NULL DEFAULT now(),PRIMARY KEY(principal_id,agent_id,entry_key));
+      ALTER TABLE work_memory_versions ADD COLUMN IF NOT EXISTS archived_items jsonb NOT NULL DEFAULT '[]';
+      CREATE TABLE IF NOT EXISTS work_memory_pages(id uuid PRIMARY KEY,data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now());
       ALTER TABLE work_memory_versions ADD COLUMN IF NOT EXISTS lineage_refs jsonb NOT NULL DEFAULT '[]';
       ALTER TABLE work_memory_versions ADD COLUMN IF NOT EXISTS written_by_run text;
     `);}
@@ -40,14 +44,14 @@ export class WorkMemory {
         const snapshot=await this.host.coordination?.snapshot(workId);
         if(!snapshot)fail('UNAVAILABLE','Work coordination is unavailable');
         const facts={state:snapshot.state,round:work.current_round,controlMode:work.control_mode,controlRevision:work.control_revision,origin:'host-confirmed',notice:'工作笔记不会改变审批、执行状态或动作回执。'};
-        if(!own&&!actor.permissions.includes('work.memory.read:'+agent.id))return{workId,agentId,title:work.data.title,facts,note:null,revision:undefined,memoryRef:undefined,sourceAuthority:null,derivedValidity:'control-only',visibility:'control-only' as const,resultRefs:[]};
+        if(!own&&!actor.permissions.includes('work.memory.read:'+agent.id))return{workId,agentId,title:work.data.title,facts,note:null,revision:undefined,memoryRef:undefined,sourceAuthority:null,derivedValidity:'control-only',visibility:'control-only' as const,currentRevision:undefined,archives:[],resultRefs:[]};
         const latest=await this.latest(workId,agentId,agent.ownerId),row=revision?(await this.host.db.pool.query('SELECT * FROM work_memory_versions WHERE work_id=$1 AND agent_id=$2 AND principal_id=$3 AND revision=$4',[workId,agentId,agent.ownerId,revision])).rows[0]:latest;
         if(revision&&!row)fail('NOT_FOUND','Work memory revision unavailable');
         const sourceStatus=row?await this.host.provenance.status(actor.id,row.dependencies):{visible:true,current:true,fingerprint:null},allowed=sourceStatus.visible;
         const results=(await this.host.db.pool.query("SELECT t.id,t.state,r.process_ref FROM tasks t LEFT JOIN task_results r ON r.task_id=t.id WHERE t.agent_id=$1 AND t.data->>'workId'=$2 AND t.data->>'executionPrincipalId'=$3 ORDER BY t.created_at DESC LIMIT 8",[agent.id,workId,agent.ownerId])).rows;
         const resultRefs=[];for(const result of results){if(!result.process_ref)continue;try{const source=await this.host.resources.read(actor.id,result.process_ref.id,result.process_ref.version,0,1);if(source.derivedValidity==='current'&&source.freshness==='current')resultRefs.push({taskId:result.id,state:result.state,ref:source.resourceRef});}catch(error){if((error as any).code!=='NOT_FOUND')throw error;}}
         const note:WorkNote=allowed&&row?row.data:{goal:work.data.title,decisions:[],blockers:[],nextSteps:[],artifacts:[]};
-        return{workId,agentId,title:work.data.title,facts,revision:row?.revision??0,currentRevision:latest?.revision??0,lineageRefs:allowed?row?.lineage_refs??[]:[],note,visibility:allowed?'private-work-memory':'sources-unavailable',sourceAuthority:sourceStatus.fingerprint,derivedValidity:sourceStatus.current&&(!row||row.revision===latest?.revision)?'current':'source-changed',resultRefs,...(row?{memoryRef:{id:row.id,revision:row.revision},updatedAt:row.created_at}:{}),origin:'agent-reported'};
+        return{workId,agentId,title:work.data.title,facts,revision:row?.revision??0,currentRevision:latest?.revision??0,lineageRefs:allowed?row?.lineage_refs??[]:[],archives:allowed?row?.archived_items??[]:[],note,visibility:allowed?'private-work-memory':'sources-unavailable',sourceAuthority:sourceStatus.fingerprint,sourceVerification:sourceStatus.verified===false?'required':'verified',derivedValidity:sourceStatus.current&&(!row||row.revision===latest?.revision)?'current':'source-changed',resultRefs,...(row?{memoryRef:{id:row.id,revision:row.revision},updatedAt:row.created_at}:{}),origin:'agent-reported'};
     }
     private async revisionSources(client:PoolClient,sources:SourceOrigin[],scope:{workId:string;agentId:string;ownerId:string;nextRevision:number},lineage:SourceOrigin[]=[],path:Set<number>=new Set()):Promise<{sources:SourceOrigin[];lineage:SourceOrigin[]}>{
         const active:SourceOrigin[]=[];
@@ -60,14 +64,14 @@ export class WorkMemory {
         }
         return{sources:this.host.provenance.unique(active),lineage:this.host.provenance.unique(lineage)};
     }
-    async save(principalId:string,workId:string,agentId:string,input:WorkNoteWrite,derivation?:SourceOrigin[],rebuild=false,expectedControlRevision?:number,runId?:string){
+    async save(principalId:string,workId:string,agentId:string,input:WorkNoteWrite,derivation?:SourceOrigin[],rebuild=false,expectedControlRevision?:number,runId?:string,organization?:{archives:any[]}){
         if(!this.host.registry.ajv.validate(workNoteSchema,input)||JSON.stringify(input).length>16000)fail('INVALID_INPUT','Invalid bounded work note');
         const client=await this.host.db.pool.connect();
         try{await client.query('BEGIN');await this.host.organization.lock(client);const {actor,agent,own}=await this.authorize(principalId,workId,agentId,client);
             if(!own)fail('PERMISSION_DENIED','Only the execution owner edits private work notes');
             if(derivation){const work=(await client.query('SELECT control_mode,control_revision FROM work_items WHERE id=$1 FOR UPDATE',[workId])).rows[0];if(work?.control_mode!=='active'||expectedControlRevision!==undefined&&work.control_revision!==expectedControlRevision)fail('WORK_STOPPED','Work control changed before the automated note action');}
             await client.query('SELECT pg_advisory_xact_lock(hashtext($1))',[workId+':'+agentId+':'+actor.id]);
-            const key=contentHash([actor.companyId,workId,agentId,actor.id,input.idempotencyKey]),hash=contentHash(rebuild?{input,mode:'rebuild'}:input);
+            const key=contentHash([actor.companyId,workId,agentId,actor.id,input.idempotencyKey]),hash=contentHash(organization?{input,mode:'organize',archives:organization.archives}:rebuild?{input,mode:'rebuild'}:input);
             const prior=(await client.query('SELECT input_hash,revision FROM work_memory_versions WHERE request_key=$1',[key])).rows[0];
             if(prior){if(prior.input_hash!==hash)fail('CONFLICT','Work note retry changed');await client.query('COMMIT');return this.read(principalId,workId,agentId,prior.revision);}
             const previous=await this.latest(workId,agentId,actor.id,client);
@@ -76,14 +80,25 @@ export class WorkMemory {
             const sourceRefs=[...input.artifacts,...input.decisions.flatMap(i=>i.refs),...input.blockers.flatMap(i=>i.refs),...input.nextSteps.flatMap(i=>i.refs)];
             const sources:SourceOrigin[]=[...(rebuild?[]:previous?.dependencies??[]),...(derivation??[]),{kind:'input',id:'work-note:'+key,ownerId:actor.id,companyId:actor.companyId}];
             for(const ref of sourceRefs){const source=await this.host.resources.originStatus(actor.id,{kind:'resource',...ref},client);if(!source.visible)fail('NOT_FOUND','Work note reference is unavailable');sources.push(...await this.host.provenance.resourceOrigins({...ref,revision:source.revision},client));}
-            const normalized=await this.revisionSources(client,sources,{workId,agentId,ownerId:actor.id,nextRevision:input.expectedRevision+1}),dependencies=normalized.sources;if(dependencies.length>512)fail('CONTEXT_BUDGET_EXCEEDED','Work note source limit reached');
+            const normalized=await this.revisionSources(client,sources,{workId,agentId,ownerId:actor.id,nextRevision:input.expectedRevision+1}),dependencies=normalized.sources;if(dependencies.length>512)fail('CONTEXT_BUDGET_EXCEEDED','Work note source delta limit reached');
             const status=await this.host.provenance.status(actor.id,dependencies,client);if(!status.visible)fail('NOT_FOUND','Work note source is unavailable');if(rebuild&&!status.current)fail('CONFLICT','Rebuild requires current authorized evidence');
             const {expectedRevision,idempotencyKey,...note}=input,revision=expectedRevision+1;
             const lineage=this.host.provenance.unique([...(previous?[{kind:'work-memory' as const,id:workId,agentId,ownerId:actor.id,version:previous.revision,relation:'revision-history' as const}]:[]),...normalized.lineage]);
-            await client.query('INSERT INTO work_memory_versions(id,company_id,work_id,principal_id,agent_id,revision,data,dependencies,request_key,input_hash,lineage_refs,written_by_run) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)',[randomUUID(),actor.companyId,workId,actor.id,agent.id,revision,JSON.stringify(note),JSON.stringify(dependencies),key,hash,JSON.stringify(lineage),runId??null]);
+            await client.query('INSERT INTO work_memory_versions(id,company_id,work_id,principal_id,agent_id,revision,data,dependencies,request_key,input_hash,lineage_refs,written_by_run,archived_items) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)',[randomUUID(),actor.companyId,workId,actor.id,agent.id,revision,JSON.stringify(note),JSON.stringify([await this.host.provenance.collections.write(actor.id,agent.id,dependencies,client)]),key,hash,JSON.stringify(lineage),runId??null,JSON.stringify(organization?.archives??[])]);
             await client.query('INSERT INTO audit(id,type,data) VALUES($1,$2,$3)',[randomUUID(),'work.memory_saved',JSON.stringify({companyId:actor.companyId,principalId:actor.id,agentId:agent.id,workId,revision})]);
             await client.query('COMMIT');return this.read(principalId,workId,agentId,revision);
         }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+    }
+    async organize(principalId:string,workId:string,agentId:string,input:NoteOrganization,derivation?:SourceOrigin[],expectedControlRevision?:number,runId?:string){
+        if(!this.host.registry.ajv.validate(organizeSchema,input))fail('INVALID_INPUT','Choose bounded note items and archival reasons');const current=await this.read(principalId,workId,agentId,input.expectedRevision);if(current.visibility!=='private-work-memory')fail('NOT_FOUND','Work memory unavailable');const note=structuredClone(current.note),keys=new Set<string>(),archives=[];
+        for(const change of input.changes){const key=change.section+':'+change.index;if(keys.has(key)||!note[change.section][change.index])fail('INVALID_INPUT','Archive selection changed or is duplicated');keys.add(key);archives.push({...change,item:note[change.section][change.index],fromRevision:input.expectedRevision});}
+        for(const section of ['decisions','blockers','nextSteps'] as const)note[section]=note[section].filter((_,index)=>!keys.has(section+':'+index));
+        return this.save(principalId,workId,agentId,{...note,expectedRevision:input.expectedRevision,idempotencyKey:input.idempotencyKey},derivation,false,expectedControlRevision,runId,{archives});
+    }
+    async history(principalId:string,workId:string,agentId:string,input:{limit?:number;cursor?:string}){const limit=input.limit??20;if(!Number.isInteger(limit)||limit<1||limit>50)fail('INVALID_INPUT','Invalid history page');const{actor,agent,own}=await this.authorize(principalId,workId,agentId);if(!own&&!actor.permissions.includes('work.memory.read:'+agent.id))fail('NOT_FOUND','Private work history unavailable');const head=await this.read(actor.id,workId,agentId),key=contentHash([actor,workId,agentId,head.currentRevision,head.sourceAuthority,await this.host.resourceIndex.authorizationGeneration(actor.companyId)]);let before=2147483647;
+        if(input.cursor){requireUuid(input.cursor);const page=(await this.host.db.pool.query("SELECT data FROM work_memory_pages WHERE id=$1 AND created_at>now()-interval '1 day'",[input.cursor])).rows[0]?.data;if(!page||page.key!==key)fail('CONFLICT','Work history continuation changed');before=page.before;}
+        const rows=(await this.host.db.pool.query('SELECT revision,created_at FROM work_memory_versions WHERE work_id=$1 AND principal_id=$2 AND agent_id=$3 AND revision<$4 ORDER BY revision DESC LIMIT $5',[workId,agent.ownerId,agentId,before,limit+1])).rows,items=[];for(const row of rows.slice(0,limit)){const value=await this.read(actor.id,workId,agentId,row.revision);items.push({revision:row.revision,currentRevision:head.currentRevision,createdAt:row.created_at,visibility:value.visibility,validity:value.derivedValidity,archives:value.archives??[],continuation:'/v1/work/'+workId+'/memory/'+agentId+'?revision='+row.revision});}
+        let nextCursor:string|null=null;if(rows.length>limit){nextCursor=randomUUID();await this.host.db.pool.query('INSERT INTO work_memory_pages(id,data) VALUES($1,$2)',[nextCursor,JSON.stringify({key,before:items.at(-1)!.revision})]);}return{items,nextCursor,currentRevision:head.currentRevision};
     }
     async bind(principalId:string,agentId:string,entryKey:string,workId:string){
         if(!entryKey?.trim()||entryKey.length>200)fail('INVALID_INPUT','Invalid work entry binding');
@@ -115,8 +130,8 @@ export class WorkMemory {
         value.omissions=sections.filter(s=>s.candidates.length).map(s=>({section:s.field,count:s.candidates.length,reason:'budget',continuation:value.readMore}));
         if(!usable&&current.memoryRef)value.omissions.push({section:'work-note',reason:'source-changed-or-unavailable',continuation:value.readMore});
         if(JSON.stringify(value).length>maxChars)fail('CONTEXT_BUDGET_EXCEEDED','Required work state and continuation references do not fit the memory budget');
-        for(const {field,candidates} of sections){
-            for(const item of candidates){const previous=structuredClone(value.omissions);value[field].push(item);const omitted=value.omissions.find((o:any)=>o.section===field);if(omitted&&!--omitted.count)value.omissions=value.omissions.filter((o:any)=>o!==omitted);if(JSON.stringify(value).length>maxChars){value[field].pop();value.omissions=previous;}}
+        for(let index=0;index<Math.max(0,...sections.map(s=>s.candidates.length));index++){
+            for(const {field,candidates} of sections){const item=candidates[index];if(item===undefined)continue;const previous=structuredClone(value.omissions);value[field].push(item);const omitted=value.omissions.find((o:any)=>o.section===field);if(omitted&&!--omitted.count)value.omissions=value.omissions.filter((o:any)=>o!==omitted);if(JSON.stringify(value).length>maxChars){value[field].pop();value.omissions=previous;}}
         }
         await this.host.db.pool.query('INSERT INTO context_operations(id,company_id,principal_id,agent_id,work_id,kind,data) SELECT $1,data->>\'companyId\',$2,$3,$4,\'memory-compaction\',$5 FROM actors WHERE id=$2',[randomUUID(),principalId,agentId,workId,JSON.stringify({outputChars:JSON.stringify(value).length,omittedSections:value.omissions.length,modelCalls:0,inputTokens:0,outputTokens:0})]);
         return{text:JSON.stringify(value),included:usable&&!!current.memoryRef,ref:current.revision!==undefined?{workId,agentId,revision:current.revision,sourceAuthority:current.sourceAuthority??null,visibility:current.visibility}:null,resultRefs:value.resultRefs,omissions:value.omissions};
@@ -141,6 +156,9 @@ export class WorkMemory {
         return{status:'choose' as const,candidates:rows.slice(0,16),limited:rows.length>16};
     }
     registerRoutes(app:FastifyInstance){
+        app.post<{Params:{id:string;agentId:string}}>('/v1/work/:id/memory/:agentId/organize',{schema:{body:organizeSchema}},async req=>this.organize((await authenticateRequest(this.host,req)).id,req.params.id,req.params.agentId,req.body as NoteOrganization));
+        app.get<{Params:{id:string;agentId:string};Querystring:{cursor?:string;limit?:number}}>('/v1/work/:id/memory/:agentId/history',{schema:{querystring:{type:'object',additionalProperties:false,properties:{cursor:{type:'string',format:'uuid'},limit:{type:'integer',minimum:1,maximum:50}}}}},async req=>this.history((await authenticateRequest(this.host,req)).id,req.params.id,req.params.agentId,req.query));
+
         app.get<{Params:{id:string;agentId:string};Querystring:{revision?:number}}>('/v1/work/:id/memory/:agentId',{schema:{querystring:{type:'object',additionalProperties:false,properties:{revision:{type:'integer',minimum:1}}}}},async req=>this.read((await authenticateRequest(this.host,req)).id,req.params.id,req.params.agentId,req.query.revision));
         app.put<{Params:{id:string;agentId:string}}>('/v1/work/:id/memory/:agentId',{schema:{body:workNoteSchema}},async req=>this.save((await authenticateRequest(this.host,req)).id,req.params.id,req.params.agentId,req.body as WorkNoteWrite));
         app.post<{Params:{id:string;agentId:string}}>('/v1/work/:id/memory/:agentId/rebuild-request',{schema:{body:{type:'object',additionalProperties:false,required:['expectedRevision','idempotencyKey'],properties:{expectedRevision:{type:'integer',minimum:0},idempotencyKey:{type:'string',minLength:1,maxLength:100}}}}},async(req,reply)=>reply.code(202).send(await this.requestRebuild((await authenticateRequest(this.host,req)).id,req.params.id,req.params.agentId,req.body as any)));

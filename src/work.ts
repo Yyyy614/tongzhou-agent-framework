@@ -164,6 +164,7 @@ export class WorkCoordinator {
         return this.get(principalId, id);
     }
     registerRoutes(app: FastifyInstance) {
+        app.post<{Params:{id:string}}>('/v1/work/:id/recipient-summary',{schema:{body:{type:'object',additionalProperties:false,properties:{}}}},async req=>this.host.results.recipientSummary((await authenticateRequest(this.host,req)).id,req.params.id));
         const principal = async (request: any) => (await authenticateRequest(this.host, request)).id;
         app.get('/v1/work', async request => this.list(await principal(request)));
         app.post('/v1/work', { schema: { body: workBody } }, async (request, reply) => reply.code(202).send(await this.create(await principal(request), request.body as WorkRequest)));

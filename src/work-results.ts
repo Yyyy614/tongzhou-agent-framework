@@ -36,6 +36,14 @@ export class WorkResults {
             catch{await this.host.db.audit('work.memory_update_deferred',{principalId:owner.id,agentId:task.agent_id,workId:task.data.workId,runId:result.id}).catch(()=>{});}
         } catch (error) { throw new FrameworkError('RESULT_UNKNOWN', 'Result persistence or its sources require reconciliation; execution was not replayed', { causeCode: (error as any).code ?? 'PERSISTENCE_ERROR', taskId: task.id, runId: result.id }); }
     }
+    async recipientSummary(principalId:string,workId:string){
+        requireUuid(workId);if(!this.host.coordination)fail('UNAVAILABLE','Work service unavailable');const work=await this.host.coordination.get(principalId,workId),{actor}=await this.host.organization.authorizeAgent(principalId,work.assignments[0]!.agentId,'read');
+        // Select reference metadata only. Never use private report/note/process text as generation input.
+        const rows=(await this.host.db.pool.query("SELECT r.reported->'artifacts' AS refs FROM task_results r JOIN tasks t ON t.id=r.task_id WHERE t.data->>'workId'=$1 ORDER BY r.created_at DESC LIMIT 32",[workId])).rows,refs=[...new Map(rows.flatMap(r=>r.refs??[]).map((r:any)=>[r.id+'@'+r.version,r])).values()] as ResourceRef[],excerpts:any[]=[],origins:import('./provenance.js').SourceOrigin[]=[];let used=0;
+        for(const ref of refs.slice(0,16)){if(used>=3000)break;try{const source=await this.host.resources.read(actor.id,ref.id,ref.version,0,Math.min(600,3000-used));if(source.derivedValidity!=='current'||source.freshness!=='current')continue;used+=source.body.length;excerpts.push({name:source.title,ref:source.resourceRef,text:source.body,label:'授权资料摘录，非已核实结论'});origins.push(...await this.host.provenance.resourceOrigins(source));}catch(error){if(!['PERMISSION_DENIED','NOT_FOUND'].includes((error as any).code))throw error;}}
+        const control={state:work.state,controlMode:work.controlMode,round:work.currentRound,assignments:work.assignments.map((a:any)=>({agentId:a.agentId,state:a.state}))},body=JSON.stringify({control,excerpts,notice:'仅从接收者可读资料独立整理；私人笔记及不可见报告没有进入本次输入。'}),resource=await this.host.resources.create(actor.id,{title:'授权范围工作进展',kind:'artifact',domain:'recipient-summaries',body,access:{scope:'personal',readerIds:[]},idempotencyKey:'recipient-summary:'+contentHash([actor.id,workId,control,origins]),sourceRefs:[]},{sources:[{kind:'input',id:'host-summary:'+workId,ownerId:actor.id,companyId:actor.companyId,digest:contentHash(control)},...origins]});
+        return{generationMode:'recipient-visible-inputs',control,excerpts,resourceRef:resource.resourceRef,inputChars:used,modelCalls:0,notice:'宿主状态与授权摘录分别展示；没有从私人全文删除引用来生成可共享摘要。'};
+    }
     async view(principalId: string, taskId: string,client?:PoolClient) {
         requireUuid(taskId);const db=client??this.host.db.pool;
         const task = (await db.query('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
