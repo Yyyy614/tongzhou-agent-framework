@@ -6,9 +6,9 @@
 
 业务能力放在插件和连接器中，内核负责可信边界。DeepSeek Harness 提供 Agent 运行和原生交互；公司账号、组织权限与数据归属由框架宿主管理。
 
-当前为开发测试版本：框架 ABI **0.1**，插件清单 **0.1/0.2**，通信协议 **1.0**；公司版桌面 **0.7.0 预览**。这些版本分别管理，旧版分发与原数据保留。[0.7 实现](docs/V07_IMPLEMENTATION.md)、[接入契约](docs/CONTEXT_CONTRACTS.md)和[实际验收](docs/V07_ACCEPTANCE.md)记录完整边界。
+当前为开发测试版本：框架 ABI **0.1**，插件清单 **0.1/0.2**，通信协议 **1.0**；公司版桌面 **0.8.0 预览**。这些版本分别管理，旧版分发与原数据保留。[0.8 可靠性与长期记忆交付](docs/V08_DELIVERY.md)记录 F1–F3、事件归属、来源集合、1001次更新和真实模型验证；默认本机隔离，旧云端未切换。[0.7 实现](docs/V07_IMPLEMENTATION.md)、[接入契约](docs/CONTEXT_CONTRACTS.md)和[实际验收](docs/V07_ACCEPTANCE.md)记录完整边界。
 
-**Windows 体验包：[下载 0.7 预览版](https://github.com/Yyyy614/tongzhou-agent-framework/releases/tag/v0.7.0-preview.1)**。提供安装向导和完整便携 ZIP，包含运行时，无需安装 Node。直接在 Harness 内用公司账号登录；[体验说明](docs/WINDOWS_V07_PREVIEW.md)说明隔离方式、部署地址与未签名限制。[0.6 旧版](https://github.com/Yyyy614/tongzhou-agent-framework/releases/tag/v0.6.0-preview.1)继续保留。
+**Windows 体验包：[下载 0.8 隔离预览版](https://github.com/Yyyy614/tongzhou-agent-framework/releases/tag/v0.8.0-preview.1)**。提供安装向导和完整便携 ZIP，包含运行时，无需安装 Node。直接在 Harness 内用公司账号登录；[体验说明](docs/WINDOWS_V08_PREVIEW.md)说明隔离方式、部署地址与未签名限制。[0.6 旧版](https://github.com/Yyyy614/tongzhou-agent-framework/releases/tag/v0.6.0-preview.1)继续保留。
 
 ## 已有能力
 
