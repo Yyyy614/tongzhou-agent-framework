@@ -21,7 +21,7 @@ tar -xzf v07-release.tgz -C unpack
 test "$(cat unpack/.project-scope)" = "$SCOPE"
 cmp unpack/release/pnpm-lock.yaml "$OLD/release/pnpm-lock.yaml"
 mv unpack/release release
-mkdir -p release/node_modules
+mkdir -p release/node_modules release/connectors/im-bridge/node_modules
 mkdir -p state/v07-host
 chmod 700 state private
 NODE=$(cat backups/node-image.txt)
