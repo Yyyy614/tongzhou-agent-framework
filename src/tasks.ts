@@ -25,6 +25,7 @@ export interface TaskRequest {
     executionProfile?:'memory-maintenance';
 }
 export interface TaskExecutor {
+    runForTask?(request:TaskRequest):ReturnType<TaskExecutor['run']>;
     assessEvent?(input: import('./event-routing.js').EventAssessment): Promise<import('./event-routing.js').EventDecision>;
     stopWork?(workId:string):Promise<void>;
     run(request: TaskRequest): Promise<{
@@ -109,7 +110,7 @@ export class TaskQueue {
         } else await this.host.authorize(principalId, row.agent_id, 'read');
         const result = await this.host.results.view(principalId, id);
         const executionOwner=row.data.executionPrincipalId??(await this.host.db.get<import('./types.js').Agent>('agents',row.agent_id)).ownerId;
-        return { id: row.id, agentId: row.agent_id, principalId: row.principal_id, initiatingPrincipalId: row.principal_id, executionPrincipalId: row.data.executionPrincipalId, workId: row.data.workId,workRound:row.data.workRound,workInputId:row.data.workInputId, state: row.state, parentTaskId: row.parent_id, runId: row.data.runId, output: result?.processAvailable||!result&&(executionOwner===principalId) ? row.data.output : undefined, result,resultPending:!!row.data.resultFormat&&!result, error: row.data.error, createdAt: row.created_at, updatedAt: row.updated_at };
+        return { id: row.id, agentId: row.agent_id, principalId: row.principal_id, initiatingPrincipalId: row.principal_id, executionPrincipalId: row.data.executionPrincipalId, workId: row.data.workId,workRound:row.data.workRound,workInputId:row.data.workInputId, state: row.state, parentTaskId: row.parent_id, runId: row.data.runId, output: result?.processAvailable ? row.data.output : undefined, result,resultPending:!!row.data.resultFormat&&!result, contentAccess:result?.contentAccess??{visibility:'unknown',validity:'unknown',notice:'来源或结构化结果缺失，原文未回传。'},error:row.data.error?{code:row.data.error.code}:undefined, createdAt: row.created_at, updatedAt: row.updated_at };
     }
     private async executeAdmitted(request: TaskRequest) {
         const deadline = Date.now() + 30000;
@@ -121,7 +122,13 @@ export class TaskQueue {
                 if (agent.ownerId !== request.principalId) fail('PERMISSION_DENIED', 'Task ownership changed before execution');
                 if (request.workId) await this.host.coordination?.authorizeExecution(initiator, request.workId, request.agentId,this.host.db.pool,request.taskId);
                 await this.host.coordination?.control.guard(request);
-                return await this.executor.run(request);
+                const result=await(this.executor.runForTask?this.executor.runForTask(request):this.executor.run(request));
+                if(await this.host.provenance.snapshot(result.id)===undefined){
+                    // A registered executor is a host-observed boundary. Opaque output stays owner-private.
+                    const digest=createHash('sha256').update(JSON.stringify(result)).digest('hex');
+                    await this.host.provenance.add(result.id,request.principalId,agent.id,[{kind:'input',id:'task-input:'+request.taskId,ownerId:agent.ownerId,agentId:agent.id,companyId:agent.companyId,digest:createHash('sha256').update(request.prompt).digest('hex')},{kind:'tool',id:'registered-executor:'+request.taskId,ownerId:agent.ownerId,agentId:agent.id,companyId:agent.companyId,digest}]);
+                }
+                return result;
             }
             catch (error) {
                 // Class identity is trusted host evidence, never a remote error code.
@@ -136,7 +143,7 @@ export class TaskQueue {
     }
     async summaries(agentId: string, principalId: string) {
         await this.host.organization.authorizeAgent(principalId, agentId, 'read');
-        const rows = (await this.host.db.pool.query("SELECT id,state,CASE WHEN data ? 'resultFormat' THEN '执行记录待整理或核实' WHEN data->>'executionPrincipalId'=$2 THEN left(data->>'output',2000) ELSE '执行状态已记录' END AS summary,data->>'runId' AS \"runId\",data->'error' AS error,updated_at FROM tasks WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 30", [agentId,principalId])).rows;
+        const rows = (await this.host.db.pool.query("SELECT id,state,'执行记录待整理或核实' AS summary,data->>'runId' AS \"runId\",CASE WHEN data ? 'error' THEN jsonb_build_object('code',data->'error'->>'code') ELSE NULL END AS error,updated_at FROM tasks WHERE agent_id=$1 ORDER BY created_at DESC LIMIT 30", [agentId])).rows;
         for (const row of rows) { const result = await this.host.results.view(principalId, row.id); if (result) { row.summary = result.summary; row.result = result; } }
         return rows;
     }

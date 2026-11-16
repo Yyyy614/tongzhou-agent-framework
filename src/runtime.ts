@@ -411,8 +411,11 @@ export class HarnessRuntime {
         }
         return tools;
     }
-    async run(request: RunRequest) {
-        const job = this.execute(request);
+    async run(request:RunRequest){return this.runManaged(request,false);}
+    /** Host queue settlement only; never returned directly by a public result route. */
+    async runForTask(request:RunRequest){return this.runManaged(request,true);}
+    private async runManaged(request: RunRequest,retentionOnly:boolean) {
+        const job = this.execute(request,retentionOnly);
         this.running.add(job);
         try {
             return await job;
@@ -548,10 +551,10 @@ export class HarnessRuntime {
         await this.host.db.audit('run.started', { principalId: actor.id, agentId: agent.id, runId: id, inputHash });
         return { actor, agent, id, scope };
     }
-    private async execute(request: RunRequest): Promise<any> {
+    private async execute(request: RunRequest,retentionOnly=false): Promise<any> {
         const admitted = await this.admit(request);
         if ('prior' in admitted)
-            return admitted.prior;
+            return retentionOnly?this.executionReceipt(admitted.prior.id,request.principalId):admitted.prior;
         const { actor, agent, id, scope } = admitted;
         const { token } = scope;
         try {
@@ -651,8 +654,9 @@ export class HarnessRuntime {
             this.scopes.delete(id);
             await scope.harness?.close();
         }
-        return this.get(id, actor.id);
+        return retentionOnly?this.executionReceipt(id,actor.id):this.get(id, actor.id);
     }
+    private async executionReceipt(id:string,principalId:string){const row=(await this.host.db.pool.query('SELECT * FROM runs WHERE id=$1 AND principal_id=$2',[id,principalId])).rows[0];if(!row)fail('NOT_FOUND','Execution receipt unavailable');return{id:row.id,state:row.state,output:row.data.output,report:row.data.report};}
     async get(id: string, principalId: string) {
         if (!/^[0-9a-f-]{36}$/u.test(id))
             fail('INVALID_INPUT', 'Invalid run id');
@@ -665,11 +669,12 @@ export class HarnessRuntime {
             const sources=await this.host.provenance.snapshot(id,client),contentAccess=await this.host.provenance.resultAccess(principalId,sources,client);
             const own=principalId===row.principal_id;let bodyAllowed=contentAccess.visible&&(row.data.taskId?!!result?.processAvailable:own);
             if(bodyAllowed&&row.data.report){const report=row.data.report;const refs=[...(report.artifacts??[]),...(report.facts??[]).flatMap((f:any)=>f.refs??[]),...(report.issues??[]).flatMap((f:any)=>typeof f==='string'?[]:f.refs??[])];for(const ref of refs){try{const source=await this.host.resources.read(principalId,ref.id,ref.version,0,1,client);if(source.freshness!=='current'||source.derivedValidity!=='current'){contentAccess.current=false;contentAccess.validity='source-changed';}}catch(error){if(!['NOT_FOUND','PERMISSION_DENIED'].includes((error as any).code))throw error;bodyAllowed=false;}}}
-            if(contentAccess.visibility!=='unknown'&&!bodyAllowed){contentAccess.visible=false;contentAccess.visibility='restricted';contentAccess.validity='restricted';contentAccess.notice='运行正文或其引用受当前权限保护；控制状态保留。';}
+            if(contentAccess.visibility!=='unknown'&&contentAccess.visible&&!bodyAllowed&&own&&row.data.report){contentAccess.visible=false;contentAccess.visibility='restricted';contentAccess.validity='restricted';contentAccess.notice='运行正文或其引用受当前权限保护；控制状态保留。';}
             const data:any={};for(const key of ['resultFormat','inputHash','pluginId','pluginVersion','preset','taskId','contextWorkId','workId','workRound','workInputId','workControlRevision','source','cancellationRequested'])if(row.data[key]!==undefined)data[key]=row.data[key];
             if(row.data.error)data.error={code:row.data.error.code};
             if(bodyAllowed){data.output=row.data.output;if(own){data.report=row.data.report;data.contextRefs=row.data.contextRefs;}if(contentAccess.current&&!result)data.summary=row.data.summary;}
-            await client.query('COMMIT');return{id:row.id,agentId:row.agent_id,principalId:row.principal_id,state:row.state,...data,contentAccess,...(result?{result}:{}),createdAt:row.created_at,updatedAt:row.updated_at};
+            const projectedResult=result&&(contentAccess.visible?result:{taskId:result.taskId,control:result.control,facts:[],artifacts:[],issues:[],summary:'执行状态已记录；结果正文受限',sourceValidity:contentAccess.validity,contentAccess,processAvailable:false,createdAt:result.createdAt});
+            await client.query('COMMIT');return{id:row.id,agentId:row.agent_id,principalId:row.principal_id,state:row.state,...data,contentAccess,bodyAccess:bodyAllowed?'authorized':'restricted',...(projectedResult?{result:projectedResult}:{}),createdAt:row.created_at,updatedAt:row.updated_at};
         }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
     }
     async cancel(id: string, principalId: string) {
