@@ -1,3 +1,4 @@
+import type{PoolClient}from'pg';
 import { randomUUID } from 'node:crypto';
 import type { Framework } from './index.js';
 import type { ResourceRef } from './resources.js';
@@ -34,19 +35,19 @@ export class WorkResults {
             catch{await this.host.db.audit('work.memory_update_deferred',{principalId:owner.id,agentId:task.agent_id,workId:task.data.workId,runId:result.id}).catch(()=>{});}
         } catch (error) { throw new FrameworkError('RESULT_UNKNOWN', 'Result persistence or its sources require reconciliation; execution was not replayed', { causeCode: (error as any).code ?? 'PERSISTENCE_ERROR', taskId: task.id, runId: result.id }); }
     }
-    async view(principalId: string, taskId: string) {
-        requireUuid(taskId);
-        const task = (await this.host.db.pool.query('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
+    async view(principalId: string, taskId: string,client?:PoolClient) {
+        requireUuid(taskId);const db=client??this.host.db.pool;
+        const task = (await db.query('SELECT * FROM tasks WHERE id=$1', [taskId])).rows[0];
         if (!task) fail('NOT_FOUND', 'Task result is unavailable');
-        if(task.principal_id===principalId&&!task.data.workId){const actor=await this.host.db.get<import('./types.js').Actor>('actors',principalId),agent=await this.host.db.get<import('./types.js').Agent>('agents',task.agent_id);if(!actor.active||actor.companyId!==agent.companyId)fail('PERMISSION_DENIED','Task receipt belongs to another company or inactive account');}
-        else await this.host.organization.authorizeAgent(principalId, task.agent_id, 'read');
-        const row = (await this.host.db.pool.query('SELECT * FROM task_results WHERE task_id=$1', [taskId])).rows[0];
+        if(task.principal_id===principalId&&!task.data.workId){const actor=await this.host.db.get<import('./types.js').Actor>('actors',principalId,client),agent=await this.host.db.get<import('./types.js').Agent>('agents',task.agent_id,client);if(!actor.active||actor.companyId!==agent.companyId)fail('PERMISSION_DENIED','Task receipt belongs to another company or inactive account');}
+        else await this.host.organization.authorizeAgent(principalId, task.agent_id, 'read',client);
+        const row = (await db.query('SELECT * FROM task_results WHERE task_id=$1', [taskId])).rows[0];
         if (!row) return null;
         const own = row.owner_id === principalId, facts: any[] = [], artifacts: any[] = [], issues: string[] = [];
-        const dependencies=await this.host.provenance.status(principalId,row.dependencies);
-        const reportVisible=row.dependencies?dependencies.visible:own;
+        const dependencies=await this.host.provenance.resultAccess(principalId,row.dependencies,db);
+        const reportVisible=dependencies.visible;
         const visible = async (ref: ResourceRef) => {
-            try { const source = await this.host.resources.read(principalId, ref.id, ref.version); return { id: source.id, version: source.version, digest: source.digest, title: source.title, freshness: source.derivedValidity==='current'?source.freshness:'stale' }; }
+            try { const source = await this.host.resources.read(principalId, ref.id, ref.version,0,16000,client); return { id: source.id, version: source.version, digest: source.digest, title: source.title, freshness: source.derivedValidity==='current'?source.freshness:'stale' }; }
             catch (error) { if ((error as any).code === 'NOT_FOUND') return null; throw error; }
         };
         const fact = async (value: ReportedFact) => {
@@ -57,8 +58,8 @@ export class WorkResults {
         if(reportVisible){for (const value of row.reported.facts) { const item = await fact(value); if (item) facts.push(item); }
         for (const value of row.reported.artifacts) { const item = await visible(value); if (item) artifacts.push(item); }
         for (const value of row.reported.issues) { if (typeof value === 'string') { if (own) issues.push(value); } else { const item = await fact(value); if (item) issues.push(item.text); } }}
-        const process = await visible(row.process_ref), state = task.state;
+        const process = reportVisible?await visible(row.process_ref):null, state = task.state;
         const summary = [state === 'succeeded' ? '执行已结束，等待人工核对' : ({ running: '执行中', failed: '执行失败', reconciliation_required: '执行结果待核实', waiting_approval: '等待审批', cancelled: '已取消' } as Record<string, string>)[state] ?? '工作已登记', ...facts.filter(f => f.freshness === 'current').map(f => f.text),...(reportVisible&&!dependencies.current?['历史依据已变化，请重新核实结论']:[]), ...(artifacts.length ? ['可查看成果 ' + artifacts.length + ' 项'] : []), ...(issues.length ? ['需关注 ' + issues.length + ' 项'] : [])].join('；');
-        return { taskId, control: { ...row.control, state }, facts, artifacts, issues, coverage: 'authorized-results', sourceValidity:!reportVisible?'restricted':dependencies.current?'current':'source-changed',summary, processAvailable: !!process, ...(process ? { processRef: row.process_ref } : {}), createdAt: row.created_at };
+        return { taskId, control: { ...row.control, state }, facts, artifacts, issues, coverage: 'authorized-results',contentAccess:dependencies,sourceValidity:dependencies.validity,summary, processAvailable: !!process, ...(process ? { processRef: row.process_ref } : {}), createdAt: row.created_at };
     }
 }

@@ -524,6 +524,8 @@ export class HarnessRuntime {
             await client.query('INSERT INTO runs(id,agent_id,principal_id,state,data,request_key) VALUES($1,$2,$3,$4,$5,$6)', [id, agent.id, actor.id, 'running', JSON.stringify({ resultFormat:'references-v1',inputHash, pluginId: agent.pluginId, pluginVersion: agent.pluginVersion, preset: agent.preset, taskId: request.taskId,contextWorkId:request.contextWorkId,executionProfile:request.executionProfile,workId:request.workId,workRound:request.workRound,workInputId:request.workInputId }), requestKey]);
             if (request.taskId)
                 await client.query('UPDATE tasks SET data=data||$2::jsonb WHERE id=$1', [request.taskId, JSON.stringify({ runId: id })]);
+            const inputOrigin=await this.host.provenance.input(id,actor,agent.id,request.prompt,client);
+            await client.query('INSERT INTO execution_sources(run_id,company_id,principal_id,agent_id,sources) VALUES($1,$2,$3,$4,$5)',[id,actor.companyId,actor.id,agent.id,JSON.stringify([inputOrigin])]);
             await client.query('COMMIT');
         }
         catch (e) {
@@ -654,13 +656,21 @@ export class HarnessRuntime {
     async get(id: string, principalId: string) {
         if (!/^[0-9a-f-]{36}$/u.test(id))
             fail('INVALID_INPUT', 'Invalid run id');
-        const row = (await this.host.db.pool.query('SELECT * FROM runs WHERE id=$1', [id])).rows[0];
-        if (!row)
-            fail('NOT_FOUND', 'Run does not exist');
-        await this.host.authorize(principalId, row.agent_id, 'read');
-        const result=row.data.taskId?await this.host.results.view(principalId,row.data.taskId):null;
-        const data={...row.data};if(result&&!result.processAvailable||!result&&principalId!==row.principal_id){delete data.output;delete data.report;}
-        return { id: row.id, agentId: row.agent_id, principalId: row.principal_id, state: row.state, ...data, ...(result?{result}:{}),createdAt: row.created_at, updatedAt: row.updated_at };
+        // Result reads linearize with host authorization changes. Never return arbitrary stored JSON.
+        const client=await this.host.db.pool.connect();
+        try{await client.query('BEGIN');await this.host.organization.lock(client);
+            const row=(await client.query('SELECT * FROM runs WHERE id=$1',[id])).rows[0];if(!row)fail('NOT_FOUND','Run does not exist');
+            await this.host.authorize(principalId,row.agent_id,'read',client);
+            const result=row.data.taskId?await this.host.results.view(principalId,row.data.taskId,client):null;
+            const sources=await this.host.provenance.snapshot(id,client),contentAccess=await this.host.provenance.resultAccess(principalId,sources,client);
+            const own=principalId===row.principal_id;let bodyAllowed=contentAccess.visible&&(row.data.taskId?!!result?.processAvailable:own);
+            if(bodyAllowed&&row.data.report){const report=row.data.report;const refs=[...(report.artifacts??[]),...(report.facts??[]).flatMap((f:any)=>f.refs??[]),...(report.issues??[]).flatMap((f:any)=>typeof f==='string'?[]:f.refs??[])];for(const ref of refs){try{const source=await this.host.resources.read(principalId,ref.id,ref.version,0,1,client);if(source.freshness!=='current'||source.derivedValidity!=='current'){contentAccess.current=false;contentAccess.validity='source-changed';}}catch(error){if(!['NOT_FOUND','PERMISSION_DENIED'].includes((error as any).code))throw error;bodyAllowed=false;}}}
+            if(contentAccess.visibility!=='unknown'&&!bodyAllowed){contentAccess.visible=false;contentAccess.visibility='restricted';contentAccess.validity='restricted';contentAccess.notice='运行正文或其引用受当前权限保护；控制状态保留。';}
+            const data:any={};for(const key of ['resultFormat','inputHash','pluginId','pluginVersion','preset','taskId','contextWorkId','workId','workRound','workInputId','workControlRevision','source','cancellationRequested'])if(row.data[key]!==undefined)data[key]=row.data[key];
+            if(row.data.error)data.error={code:row.data.error.code};
+            if(bodyAllowed){data.output=row.data.output;if(own){data.report=row.data.report;data.contextRefs=row.data.contextRefs;}if(contentAccess.current&&!result)data.summary=row.data.summary;}
+            await client.query('COMMIT');return{id:row.id,agentId:row.agent_id,principalId:row.principal_id,state:row.state,...data,contentAccess,...(result?{result}:{}),createdAt:row.created_at,updatedAt:row.updated_at};
+        }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
     }
     async cancel(id: string, principalId: string) {
         const run = await this.get(id, principalId);

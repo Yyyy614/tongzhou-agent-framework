@@ -109,16 +109,16 @@ export class Resources {
             await client.query('COMMIT'); return derivation?.retentionOnly?this.retained(id):this.read(actor.id, id);
         } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
     }
-    async read(principalId: string, id: string, version?: number, offset = 0, limit = 16000) {
+    async read(principalId: string, id: string, version?: number, offset = 0, limit = 16000,transactionClient?:PoolClient) {
         requireUuid(id); if (version !== undefined && (!Number.isInteger(version) || version < 1) || !Number.isInteger(offset) || offset < 0 || !Number.isInteger(limit) || limit < 1 || limit > 16000) fail('INVALID_INPUT', 'Invalid resource page');
-        return this.reading(async client=>{
+        const read=async(client:PoolClient)=>{
         const actor = await this.actor(principalId,client), row = (await client.query('SELECT * FROM company_resources WHERE id=$1', [id])).rows[0];
         if (!row || !await this.canRead(actor, row,client)) fail('NOT_FOUND', 'Resource is unavailable');
         const data = (await client.query('SELECT * FROM resource_versions WHERE resource_id=$1 AND version=$2', [id, version ?? row.current_version])).rows[0];
         if (!data) fail('NOT_FOUND', 'Resource version is unavailable');
         const status=await this.versionStatus(actor,row,data,client);if(!status.visible)fail('NOT_FOUND','Resource is unavailable');
         return { ...this.metadata(row, data,status),resourceRef:{id:row.id,version:data.version}, body: data.body.slice(offset, offset + limit), offset, nextOffset: offset + limit < data.body.length ? offset + limit : null, totalChars: data.body.length, sourceRefs: data.source_refs };
-        });
+        };return transactionClient?read(transactionClient):this.reading(read);
     }
     async snippet(principalId:string,ref:ResourceRef,query:string,limit:number){
         await this.read(principalId,ref.id,ref.version,0,1);
