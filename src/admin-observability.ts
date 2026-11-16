@@ -27,7 +27,7 @@ export function registerAdminObservability(api: FastifyInstance, host: Framework
         const { agentId, type, q, before } = request.query;
         if ((q?.length ?? 0) > 200 || (type?.length ?? 0) > 100 || before && !/^\d{1,19}$/u.test(before))
             fail('INVALID_INPUT', 'Invalid log filter');
-        const result = await host.db.pool.query(`SELECT e.seq::text AS cursor,e.id,e.type,e.data,e.created_at AS "createdAt" FROM audit e WHERE ${visible} AND ($2::text IS NULL OR e.data->>'agentId'=$2) AND ($3::text IS NULL OR e.type=$3) AND ($4::text IS NULL OR e.type ILIKE '%'||$4||'%' OR e.data::text ILIKE '%'||$4||'%') AND ($5::bigint IS NULL OR e.seq<$5) ORDER BY e.seq DESC LIMIT 101`, [await company(request), agentId ?? null, type ?? null, q ?? null, before ?? null]);
+        const result = await host.db.pool.query(`SELECT e.seq::text AS cursor,e.id,e.type,e.data,e.created_at AS "createdAt" FROM audit e WHERE ${visible} AND (e.type NOT IN ('report.recorded','work.result_recorded','work.memory_saved') AND e.type NOT LIKE 'resource.%' OR e.data->>'principalId'=$6) AND ($2::text IS NULL OR e.data->>'agentId'=$2) AND ($3::text IS NULL OR e.type=$3) AND ($4::text IS NULL OR e.type ILIKE '%'||$4||'%' OR e.data::text ILIKE '%'||$4||'%') AND ($5::bigint IS NULL OR e.seq<$5) ORDER BY e.seq DESC LIMIT 101`, [await company(request), agentId ?? null, type ?? null, q ?? null, before ?? null, (request as any).principalId]);
         const items = result.rows.slice(0, 100);
         return { items, nextCursor: result.rows.length > 100 ? items.at(-1)?.cursor : null };
     });
@@ -56,11 +56,12 @@ export function registerAdminObservability(api: FastifyInstance, host: Framework
         const indexed = new Map(numeric(series.rows).map(r => [r.day, r]));
         const format = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' });
         const filled = Array.from({ length: days }, (_, i) => { const day = format.format(new Date(Date.now() - (days - 1 - i) * 86400000)); return indexed.get(day) ?? { day, requests: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0 }; });
+        for(const row of records.rows)if(row.data.principalId!==(request as any).principalId&&row.data.contextManifest){const {resourceRefs,noteRefs,...safe}=row.data.contextManifest;row.data.contextManifest={...safe,sourceVisibility:'only-in-authorized-context-detail'};}
         return { days, timeZone: 'Asia/Shanghai', totals: numeric(totals.rows)[0], series: filled, byEmployee: numeric(byEmployee.rows), byAgent: numeric(byAgent.rows), records: records.rows, priceStatus: 'unconfigured', recordsLimit: 100 };
     });
     api.get('/overview', async (request) => {
         const companyId = await company(request);
-        const [people, agents, tasks, recent] = await Promise.all([host.db.list<Actor>('actors'), host.db.list<Agent>('agents'), host.db.pool.query("SELECT t.state,count(*)::int AS count FROM tasks t JOIN agents a ON a.id=t.agent_id WHERE a.data->>'companyId'=$1 GROUP BY t.state", [companyId]), host.db.pool.query("SELECT r.id,r.agent_id AS \"agentId\",r.principal_id AS \"principalId\",r.state,CASE WHEN r.data ? 'resultFormat' THEN '执行记录待整理或核实' ELSE left(r.data->>'output',500) END AS summary,r.data->>'taskId' AS \"taskId\",r.data->'error' AS error,r.created_at AS \"createdAt\" FROM runs r JOIN agents a ON a.id=r.agent_id WHERE a.data->>'companyId'=$1 ORDER BY r.created_at DESC LIMIT 8", [companyId])]);
+        const [people, agents, tasks, recent] = await Promise.all([host.db.list<Actor>('actors'), host.db.list<Agent>('agents'), host.db.pool.query("SELECT t.state,count(*)::int AS count FROM tasks t JOIN agents a ON a.id=t.agent_id WHERE a.data->>'companyId'=$1 GROUP BY t.state", [companyId]), host.db.pool.query("SELECT r.id,r.agent_id AS \"agentId\",r.principal_id AS \"principalId\",r.state,CASE WHEN r.data ? 'resultFormat' THEN '执行记录待整理或核实' WHEN r.principal_id=$2 THEN left(r.data->>'output',500) ELSE '执行状态已记录' END AS summary,r.data->>'taskId' AS \"taskId\",r.data->'error' AS error,r.created_at AS \"createdAt\" FROM runs r JOIN agents a ON a.id=r.agent_id WHERE a.data->>'companyId'=$1 ORDER BY r.created_at DESC LIMIT 8", [companyId,(request as any).principalId])]);
         for(const run of recent.rows)if(run.taskId){const result=await host.results.view((request as any).principalId,run.taskId);if(result)run.summary=result.summary;}
         const employees = people.filter(p => p.companyId === companyId);
         const ownAgents = agents.filter(a => a.companyId === companyId);

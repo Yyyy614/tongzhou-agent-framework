@@ -24,6 +24,7 @@ export class WorkActions{
     async execute<T>(request:TaskRequest,toolRef:string,input:unknown,execute:()=>Promise<T>,runId?:string):Promise<{value:T;reused:boolean;actionId:string|null}>{
         if(!request.workId)return{value:await execute(),reused:false,actionId:null};
         const host=this.control.host;
+        const dependencies=runId?await host.provenance.snapshot(runId):undefined;
         const admission=await this.control.transaction(async client=>{
             await client.query('SELECT id FROM work_items WHERE id=$1 FOR UPDATE',[request.workId]);await this.control.guard(request,client);
             const task=(await client.query('SELECT * FROM tasks WHERE id=$1',[request.taskId])).rows[0];
@@ -35,7 +36,7 @@ export class WorkActions{
             if(prior&&prior.state!=='not_executed')fail('RESULT_UNKNOWN','An action is pending or uncertain; do not replay it');
             const actionId=prior?.id??randomUUID(),attemptId=randomUUID();
             if(prior)await client.query("UPDATE work_actions SET state='running',updated_at=now() WHERE id=$1",[actionId]);
-            else await client.query('INSERT INTO work_actions(id,work_id,action_scope,agent_id,task_id,run_id,action_key,state,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[actionId,request.workId,work.action_scope,request.agentId,request.taskId,runId??null,key,'running',JSON.stringify({toolRef,input,inputHash:contentHash(input)})]);
+            else await client.query('INSERT INTO work_actions(id,work_id,action_scope,agent_id,task_id,run_id,action_key,state,data) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)',[actionId,request.workId,work.action_scope,request.agentId,request.taskId,runId??null,key,'running',JSON.stringify({toolRef,input,inputHash:contentHash(input),dependencies})]);
             await client.query('INSERT INTO work_action_attempts(id,action_id,task_id,run_id,state,data) VALUES($1,$2,$3,$4,$5,$6)',[attemptId,actionId,request.taskId,runId??null,'running',JSON.stringify({controlRevision:request.workControlRevision??0})]);
             return{actionId:actionId as string,attemptId,reused:false,value:undefined};
         });

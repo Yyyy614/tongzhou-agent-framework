@@ -175,7 +175,7 @@ export class HarnessClients {
                 if (!lease.turn) {
                     const input = currentNativeInput(body.messages);
                     const turnKey = createHash('sha256').update(JSON.stringify([g.sessionId, g.turnId])).digest('hex');
-                    const admitted = await runtime.openClientTurn({ principalId: lease.principalId, agentId: lease.agentId, prompt: input, idempotencyKey: 'native:' + turnKey, clientSessionId: g.sessionId, clientConnectionId: lease.id, expectedAgentRevision: lease.agentRevision, initialContextRefs: lease.contextRefs,contextResources:lease.context?.resources,contextWorkId:lease.context?.workId });
+                    const admitted = await runtime.openClientTurn({ principalId: lease.principalId, agentId: lease.agentId, prompt: input, idempotencyKey: 'native:' + turnKey, clientSessionId: g.sessionId, clientConnectionId: lease.id, expectedAgentRevision: lease.agentRevision, initialContextRefs: lease.contextRefs,contextResources:lease.context?.resources,contextWorkId:lease.context?.workId,contextWorkCleared:!!lease.context&&!lease.context.workId });
                     lease.turn = { ...admitted, expiresAt: Date.now() + 180000 };
                     lease.lastRunId = admitted.id;
                     if (g.cancelled || lease.generation !== g) {

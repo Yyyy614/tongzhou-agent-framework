@@ -1,0 +1,65 @@
+import {randomUUID} from 'node:crypto';
+import type {Framework} from './index.js';
+import type {Actor} from './types.js';
+import {contentHash} from './contracts.js';
+import {fail} from './errors.js';
+
+export interface SourceOrigin {
+    kind:'resource'|'memory'|'input'|'tool'|'unknown'|'work-memory';
+    id:string;version?:number;revision?:string;agentId?:string;ownerId?:string;companyId?:string;digest?:string;readerIds?:string[];
+}
+/** Immutable input origins are recorded by host adapters, never accepted from a model report. */
+export class SourceProvenance {
+    constructor(readonly host:Framework){}
+    async open(){await this.host.db.pool.query(`
+      CREATE TABLE IF NOT EXISTS execution_sources(run_id text PRIMARY KEY,company_id text NOT NULL,principal_id text NOT NULL,agent_id text NOT NULL,sources jsonb NOT NULL,updated_at timestamptz NOT NULL DEFAULT now());
+      CREATE TABLE IF NOT EXISTS model_context_requests(id uuid PRIMARY KEY,run_id text NOT NULL,principal_id text NOT NULL,agent_id text NOT NULL,ordinal integer NOT NULL,data jsonb NOT NULL,created_at timestamptz NOT NULL DEFAULT now(),UNIQUE(run_id,ordinal));
+    `);}
+    unique(sources:SourceOrigin[]){return [...new Map(sources.map(s=>[contentHash(s),s])).values()];}
+    async add(runId:string,principalId:string,agentId:string,sources:SourceOrigin[]){
+        const {actor}=await this.host.authorize(principalId,agentId);
+        const client=await this.host.db.pool.connect();
+        try{await client.query('BEGIN');await client.query('INSERT INTO execution_sources(run_id,company_id,principal_id,agent_id,sources) VALUES($1,$2,$3,$4,\'[]\') ON CONFLICT DO NOTHING',[runId,actor.companyId,actor.id,agentId]);
+            const row=(await client.query('SELECT * FROM execution_sources WHERE run_id=$1 FOR UPDATE',[runId])).rows[0];
+            if(row.principal_id!==actor.id||row.agent_id!==agentId)fail('PERMISSION_DENIED','Execution source scope changed');
+            const next=this.unique([...row.sources,...sources]);if(next.length>512)fail('CONTEXT_BUDGET_EXCEEDED','Execution source expansion limit reached');
+            await client.query('UPDATE execution_sources SET sources=$2,updated_at=now() WHERE run_id=$1',[runId,JSON.stringify(next)]);await client.query('COMMIT');
+        }catch(error){await client.query('ROLLBACK');throw error;}finally{client.release();}
+    }
+    async snapshot(runId:string){return (await this.host.db.pool.query('SELECT sources FROM execution_sources WHERE run_id=$1',[runId])).rows[0]?.sources as SourceOrigin[]|undefined;}
+    async input(runId:string,actor:Actor,agentId:string,input:string):Promise<SourceOrigin>{
+        const task=(await this.host.db.pool.query("SELECT t.principal_id FROM runs r JOIN tasks t ON t.id::text=r.data->>'taskId' WHERE r.id=$1 AND r.principal_id=$2 AND t.data->>'executionPrincipalId'=$2 AND t.agent_id=$3",[runId,actor.id,agentId])).rows[0];
+        return{kind:'input',id:runId,ownerId:actor.id,companyId:actor.companyId,agentId,readerIds:task?[task.principal_id]:[],digest:contentHash(input)};
+    }
+    async resourceOrigins(value:any):Promise<SourceOrigin[]>{
+        const version=(await this.host.db.pool.query('SELECT dependencies,source_refs,created_by FROM resource_versions WHERE resource_id=$1 AND version=$2',[value.id,value.version])).rows[0];
+        if(!version)fail('NOT_FOUND','Resource origin is unavailable');
+        const inherited=version.dependencies??(version.source_refs.some((s:string)=>/^(?:run|task):/u.test(s))?[{kind:'unknown',id:value.id,ownerId:version.created_by}]:[]);
+        return [{kind:'resource',id:value.id,version:value.version,revision:value.revision},...inherited];
+    }
+    async status(principalId:string,sources:SourceOrigin[]|null|undefined){
+        if(!sources)return{visible:false,current:false};
+        const actor=await this.host.db.get<Actor>('actors',principalId);if(!actor.active)return{visible:false,current:false};
+        let current=true;
+        for(const source of sources){
+            if(source.kind==='resource'){
+                const status=await this.host.resources.originStatus(actor.id,source);
+                if(!status.visible)return{visible:false,current:false};current&&=status.current;
+            }else if(source.kind==='memory'){
+                try{const note=await this.host.readMemory({principalId:actor.id,agentId:source.agentId!,noteId:source.id});current&&=note.version===source.version;}
+                catch(error){if(['PERMISSION_DENIED','NOT_FOUND'].includes((error as any).code))return{visible:false,current:false};throw error;}
+            }else if(source.companyId&&source.companyId!==actor.companyId)return{visible:false,current:false};
+            else if(source.ownerId!==actor.id){
+                if(!source.readerIds?.includes(actor.id)||!source.agentId)return{visible:false,current:false};
+                try{await this.host.organization.authorizeAgent(actor.id,source.agentId,'read');}catch(error){if((error as any).code==='PERMISSION_DENIED')return{visible:false,current:false};throw error;}
+            }
+        }
+        return{visible:true,current};
+    }
+    async request(runId:string,principalId:string,agentId:string,ordinal:number,body:unknown,manifest:any){
+        const sources=await this.snapshot(runId);if(!sources)fail('CONFLICT','Model request has no host source ledger');
+        const status=await this.status(principalId,sources);if(!status.visible)fail('CONFLICT','Model source access changed before dispatch');
+        const id=randomUUID(),data={...manifest,sources,requestHash:contentHash(body),requestChars:JSON.stringify(body).length,policy:'all-input-origins-v1'};
+        const row=(await this.host.db.pool.query('INSERT INTO model_context_requests(id,run_id,principal_id,agent_id,ordinal,data) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(run_id,ordinal) DO UPDATE SET data=EXCLUDED.data RETURNING id',[id,runId,principalId,agentId,ordinal,JSON.stringify(data)])).rows[0];return row.id as string;
+    }
+}

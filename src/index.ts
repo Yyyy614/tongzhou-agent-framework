@@ -15,6 +15,8 @@ import { PresetCatalog } from './presets.js';
 import { Organization } from './organization.js';
 import { Channels } from './channels.js';
 import { Resources } from './resources.js';
+import { SourceProvenance } from './provenance.js';
+import {WorkMemory} from './work-memory.js';
 import { WorkResults } from './work-results.js';
 import { CapabilityMarket } from './market.js';
 import { EventRouting } from './event-routing.js';
@@ -51,6 +53,8 @@ export class Framework {
     readonly organization: Organization;
     readonly channels: Channels;
     readonly resources: Resources;
+    readonly provenance: SourceProvenance;
+    readonly workMemory: WorkMemory;
     readonly results: WorkResults;
     readonly market: CapabilityMarket;
     readonly events: EventRouting;
@@ -63,6 +67,8 @@ export class Framework {
         this.organization = new Organization(this);
         this.channels = new Channels(this);
         this.resources = new Resources(this);
+        this.provenance = new SourceProvenance(this);
+        this.workMemory = new WorkMemory(this);
         this.results = new WorkResults(this);
         this.market = new CapabilityMarket(this);
         this.events = new EventRouting(this);
@@ -263,7 +269,7 @@ export class Framework {
         const limit = request.limit ?? 100;
         if (!Number.isInteger(limit) || limit < 1 || limit > 500)
             fail('INVALID_INPUT', 'Invalid log limit');
-        return (await this.db.pool.query("SELECT id,type,data,created_at FROM audit WHERE data->>'agentId'=$1 ORDER BY seq DESC LIMIT $2", [request.agentId, limit])).rows;
+        return (await this.db.pool.query("SELECT id,type,data,created_at FROM audit WHERE data->>'agentId'=$1 AND (type<>'report.recorded' OR data->>'principalId'=$3) ORDER BY seq DESC LIMIT $2", [request.agentId, limit,request.principalId])).rows;
     }
     async recordReport(request: {
         principalId: string;
@@ -274,7 +280,11 @@ export class Framework {
         await this.authorize(request.principalId, request.agentId);
         if (typeof request.summary !== 'string' || request.summary.length > 8000)
             fail('INVALID_INPUT', 'Invalid report');
-        return { evidenceRef: await this.db.audit('report.recorded', request) };
+        const {actor}=await this.authorize(request.principalId,request.agentId);
+        const sources=request.runId?await this.provenance.snapshot(request.runId):undefined;
+        const resource=await this.resources.create(actor.id,{title:'岗位工作报告',kind:'artifact',domain:'work-process',body:request.summary,access:{scope:'personal',readerIds:[]},idempotencyKey:'report:'+randomUUID(),sourceRefs:request.runId?['run:'+request.runId]:[]},{sources:sources??[{kind:'unknown',id:request.runId??randomUUID(),ownerId:actor.id,companyId:actor.companyId}]});
+        const resourceRef={id:resource.id,version:resource.version};
+        return { evidenceRef: await this.db.audit('report.recorded', {principalId:actor.id,agentId:request.agentId,runId:request.runId,resourceRef}),resourceRef };
     }
     async authorizeHostCapability(principalId: string, agentId: string, toolRef: string, permission: string, version?: string, client?: Pick<PoolClient, 'query'>) {
         const { actor, agent } = await this.authorize(principalId, agentId, 'execute', client);
@@ -486,4 +496,4 @@ export class Framework {
         await this.db.close();
     }
 }
-export async function createFramework(options: FrameworkOptions) { const framework = new Framework(options); await framework.presets.open(options.presetDirectories); await framework.registry.open(); await framework.db.open(); await framework.channels.open(); await framework.resources.open(); await framework.results.open(); await framework.market.open(); await framework.events.open(); return framework; }
+export async function createFramework(options: FrameworkOptions) { const framework = new Framework(options); await framework.presets.open(options.presetDirectories); await framework.registry.open(); await framework.db.open(); await framework.channels.open(); await framework.resources.open(); await framework.provenance.open(); await framework.workMemory.open(); await framework.results.open(); await framework.market.open(); await framework.events.open(); return framework; }

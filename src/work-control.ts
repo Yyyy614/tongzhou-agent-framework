@@ -38,7 +38,8 @@ export class WorkControl{
     async authorizeRead(client:Pick<PoolClient,'query'>,principalId:string,id:string){
         try{return await this.authorize(client,principalId,id);}catch(error){if((error as any).code!=='PERMISSION_DENIED')throw error;return this.authorize(client,principalId,id,true);}
     }
-    private async canReadPayload(client:Pick<PoolClient,'query'>,principalId:string,agentId:string,tool:string){
+    private async canReadPayload(client:Pick<PoolClient,'query'>,principalId:string,agentId:string,tool:string,dependencies?:import('./provenance.js').SourceOrigin[]){
+        if(dependencies&&!(await this.host.provenance.status(principalId,dependencies)).visible)return false;
         let privateMemory=tool.startsWith('memory_write@');
         const versionAt=tool.lastIndexOf('@'),colon=tool.lastIndexOf(':');
         if(colon>0&&versionAt>colon){
@@ -96,8 +97,8 @@ export class WorkControl{
     }
     async status(principalId:string,id:string){return this.transaction(async client=>{
         const{snapshot}=await this.authorizeRead(client,principalId,id);
-        const actions=(await client.query("SELECT id,action_scope,agent_id,task_id,run_id,state,data->>'toolRef' AS tool,left((data->'input')::text,240) AS input_preview,length((data->'input')::text)>240 AS input_truncated,created_at,updated_at FROM work_actions WHERE work_id=$1 ORDER BY (action_scope=$2 AND state IN ('unknown','running')) DESC,created_at DESC,id LIMIT 257",[id,snapshot.work.action_scope])).rows;
-        for(const action of actions)if(!await this.canReadPayload(client,principalId,action.agent_id,action.tool)){action.input_preview='私有记忆操作：需要独立记忆权限';action.input_truncated=false;action.input_restricted=true;}
+        const actions=(await client.query("SELECT id,action_scope,agent_id,task_id,run_id,state,data->>'toolRef' AS tool,data->'dependencies' AS source_dependencies,left((data->'input')::text,240) AS input_preview,length((data->'input')::text)>240 AS input_truncated,created_at,updated_at FROM work_actions WHERE work_id=$1 ORDER BY (action_scope=$2 AND state IN ('unknown','running')) DESC,created_at DESC,id LIMIT 257",[id,snapshot.work.action_scope])).rows;
+        for(const action of actions){const readable=await this.canReadPayload(client,principalId,action.agent_id,action.tool,action.source_dependencies??undefined);delete action.source_dependencies;if(!readable){action.input_preview='执行资料受独立权限保护';action.input_truncated=false;action.input_restricted=true;}}
         const controls=(await client.query('SELECT id,principal_id,data,created_at FROM work_controls WHERE work_id=$1 ORDER BY created_at DESC LIMIT 128',[id])).rows;
         const reconciliations=(await client.query('SELECT id,task_id,action_id,reviewed_by,data,created_at FROM work_reconciliations WHERE work_id=$1 ORDER BY created_at DESC LIMIT 256',[id])).rows;
         return{workId:id,mode:snapshot.work.control_mode,controlRevision:snapshot.work.control_revision,control:snapshot.work.control_data,actions:actions.slice(0,256),actionsLimit:256,actionsTruncated:actions.length>256,controls,reconciliations};
@@ -106,8 +107,8 @@ export class WorkControl{
         requireUuid(actionId);await this.authorizeRead(client,principalId,id);
         const row=(await client.query('SELECT * FROM work_actions WHERE work_id=$1 AND id=$2',[id,actionId])).rows[0];if(!row)fail('NOT_FOUND','Action does not belong to this work');
         const input=JSON.stringify(row.data.input??null),attempts=(await client.query("SELECT id,task_id,run_id,state,created_at,updated_at,data->>'error' AS error,data?'lateReceipt' AS has_late_receipt FROM work_action_attempts WHERE action_id=$1 ORDER BY created_at DESC LIMIT 32",[actionId])).rows;
-        const readable=await this.canReadPayload(client,principalId,row.agent_id,row.data.toolRef);
-        return{actionId,tool:row.data.toolRef,state:row.state,agentId:row.agent_id,taskId:row.task_id,input:readable&&input.length<=32000?row.data.input:undefined,inputExcerpt:readable?input.slice(0,32000):'私有记忆操作：需要独立记忆权限',inputRestricted:!readable,inputTruncated:readable&&input.length>32000,inputHash:readable?row.data.inputHash:undefined,receipt:readable?(row.data.value??null):null,confirmationSource:row.data.confirmationSource??null,attempts,attemptsLimit:32};
+        const readable=await this.canReadPayload(client,principalId,row.agent_id,row.data.toolRef,row.data.dependencies);
+        return{actionId,tool:row.data.toolRef,state:row.state,agentId:row.agent_id,taskId:row.task_id,input:readable&&input.length<=32000?row.data.input:undefined,inputExcerpt:readable?input.slice(0,32000):'执行资料受独立权限保护',inputRestricted:!readable,inputTruncated:readable&&input.length>32000,inputHash:readable?row.data.inputHash:undefined,receipt:readable?(row.data.value??null):null,confirmationSource:row.data.confirmationSource??null,attempts,attemptsLimit:32};
     });}
     async reconcile(principalId:string,id:string,input:WorkReconciliation){
         if(!/^[a-f0-9]{64}$/u.test(input.revision??'')||!input.idempotencyKey?.trim()||input.idempotencyKey.length>160||!input.reason?.trim()||input.reason.length>1000||!Array.isArray(input.evidenceRefs)||!input.evidenceRefs.length||input.evidenceRefs.length>16||input.evidenceRefs.some(r=>typeof r!=='string'||!r.trim()||r.length>240)||(!input.actions?.length&&!input.tasks?.length)||(input.actions?.length??0)>16||(input.tasks?.length??0)>16)fail('INVALID_INPUT','Human reconciliation requires concrete evidence and affected references');
@@ -121,7 +122,7 @@ export class WorkControl{
             for(const action of input.actions??[]){
                 requireUuid(action.actionId);if(!['succeeded','not_executed'].includes(action.outcome)||action.outcome==='succeeded'&&!Object.hasOwn(action,'value')||Buffer.byteLength(JSON.stringify(action.value)??'null')>131072)fail('INVALID_INPUT','A confirmed action needs its actual bounded receipt value');
                 const row=(await client.query('SELECT * FROM work_actions WHERE id=$1 AND work_id=$2 AND action_scope=$3 FOR UPDATE',[action.actionId,id,snapshot.work.action_scope])).rows[0];if(!row||row.state!=='unknown')fail('CONFLICT','Only an uncertain action in this recovery chain can be reconciled');
-                if(action.outcome==='succeeded'&&!await this.canReadPayload(client,principalId,row.agent_id,row.data.toolRef))fail('PERMISSION_DENIED','Confirming a private-memory receipt requires its independent memory grant');
+                if(action.outcome==='succeeded'&&!await this.canReadPayload(client,principalId,row.agent_id,row.data.toolRef,row.data.dependencies))fail('PERMISSION_DENIED','Confirming a private-memory receipt requires its independent memory grant');
                 if(action.outcome==='succeeded')await this.actions.validateReceipt(row.data.toolRef,action.value);
                 const resolutionId=randomUUID(),data={source:'human',outcome:action.outcome,reason:input.reason,evidenceRefs:input.evidenceRefs,controlId};
                 await client.query('INSERT INTO work_reconciliations(id,work_id,action_id,reviewed_by,data) VALUES($1,$2,$3,$4,$5)',[resolutionId,id,row.id,actor.id,JSON.stringify(data)]);

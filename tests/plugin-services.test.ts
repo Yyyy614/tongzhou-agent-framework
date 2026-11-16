@@ -21,7 +21,9 @@ test('a mounted plugin receives scoped memory and report services only after exp
         await host.putAgent({ ...agent, servicePermissions: ['memory.self.read', 'report.self.write'] });
         expect((await host.invoke({ ...request, idempotencyKey: 'granted' })).output).toEqual({ text: 'My own notes' });
         const logs = await host.listLogs({ principalId: 'alice', agentId: 'worker' });
-        expect(logs.find(l => l.type === 'report.recorded')?.data.summary).toBe('My own notes');
+        const report=logs.find(l => l.type === 'report.recorded')?.data;
+        expect(report?.summary).toBeUndefined();
+        expect((await host.resources.read('alice',report!.resourceRef.id,report!.resourceRef.version)).body).toBe('My own notes');
     }
     finally {
         await host.close();
