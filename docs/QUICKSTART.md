@@ -1,5 +1,7 @@
 # 快速开始
 
+0.8本机隔离体验请优先按[根目录README](../README.md#本机体验-08)及[Windows体验步骤](WINDOWS_V08_PREVIEW.md)启动55081宿主；本页4317/4917为普通开发与早期工作台入口。截至2026-11-17，本项目的服务器测试部署已停用，不提供在线测试地址。
+
 ## 1. 环境与依赖
 
 需要Node.js 24.9或更新版本、Git、可连接的PostgreSQL。锁定的包管理器为pnpm 11.28.5。Windows原生桌面还需要PowerShell 7、7-Zip和固定版本的Harness/Electron，后端及插件开发不要求先构建桌面。

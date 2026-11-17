@@ -4,6 +4,8 @@
 
 | 任务 | 文档 |
 | --- | --- |
+| 项目理念、组织协作与参考来源 | [为什么做同舟](WHY_TONGZHOU.md) |
+| 当前 0.8 交付与隔离体验 | [交付记录](V08_DELIVERY.md)、[Windows 体验](WINDOWS_V08_PREVIEW.md) |
 | 首次安装、启动、打开后台 | [快速开始](QUICKSTART.md) |
 | 理解模块责任及实际实现 | [架构概览](ARCHITECTURE.md) |
 | 开发能力包、统一插件插座 | [接入标准](INTEGRATION_STANDARD.md)、[协议](PROTOCOL.md) |
